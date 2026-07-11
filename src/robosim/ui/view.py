@@ -18,6 +18,7 @@ import time
 import mujoco
 import mujoco.viewer
 
+from robosim.core.movers import derive_movers, update_movers
 from robosim.core.world import World, build_world
 from robosim.ui import overlay
 
@@ -68,6 +69,7 @@ def run_view(
     from robosim.sensors.lidar import Lidar
 
     lidar = Lidar()
+    movers = derive_movers(world.model, world.scene)
     dt = world.model.opt.timestep
 
     print("robosim view — mouse: orbit/pan/zoom · Tab: left panel · "
@@ -102,6 +104,8 @@ def run_view(
                 steps = int(sim_budget / dt)
                 sim_budget -= steps * dt
             for _ in range(steps):
+                if movers:
+                    update_movers(world.data, movers, world.data.time)
                 mujoco.mj_step(world.model, world.data)
             timer.update(world.data.time, steps)
 

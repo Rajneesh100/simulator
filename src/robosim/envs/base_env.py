@@ -17,6 +17,7 @@ import numpy as np
 from gymnasium import spaces
 
 from robosim.core import physics
+from robosim.core.movers import derive_movers, update_movers
 from robosim.core.registry import get_task
 from robosim.core.world import build_world
 from robosim.envs.obs import build_obs, obs_dim
@@ -103,17 +104,10 @@ class RoboSimEnv(gym.Env):
                 pass
         self._base_friction = self.world.model.geom_friction.copy()
         self._base_mass = self.world.model.body_mass.copy()
-        self._movers = []
-        for mover in self.world.scene.moving_bodies():
-            mocap_id = self.world.model.body(mover["name"]).mocapid[0]
-            axis_vec = np.array([1.0, 0.0, 0.0] if mover["axis"] == "x" else [0.0, 1.0, 0.0])
-            self._movers.append({**mover, "mocap_id": mocap_id, "axis_vec": axis_vec})
+        self._movers = derive_movers(self.world.model, self.world.scene)
 
     def _update_movers(self) -> None:
-        t = self.world.data.time
-        for m in self._movers:
-            offset = m["amplitude"] * np.sin(2 * np.pi * t / m["period"]) * m["axis_vec"]
-            self.world.data.mocap_pos[m["mocap_id"]] = np.array(m["base_pos"]) + offset
+        update_movers(self.world.data, self._movers, self.world.data.time)
 
     def set_scene(self, scene_arg: str) -> None:
         """Rebuild the world with a new scene (same robot) — curriculum hook (idea.md

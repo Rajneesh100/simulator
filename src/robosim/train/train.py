@@ -18,7 +18,6 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecFram
 from robosim.envs.base_env import DomainRandomization, RoboSimEnv
 from robosim.train.policies import policy_kwargs_for, sb3_policy_name_for
 
-N_LIDAR_BEAMS = 16
 FRAME_STACK_K = 4
 
 
@@ -100,6 +99,10 @@ def run_train(
     bc_init: str | None = None,
     domain_randomization: DomainRandomization | None = None,
     curriculum: str | None = None,
+    n_lidar_beams: int = 16,
+    lidar_fov_deg: float = 270.0,
+    lidar_max_range: float = 5.0,
+    max_episode_steps: int = 500,
 ) -> Path:
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -110,7 +113,16 @@ def run_train(
     run_dir = Path("runs") / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    env_kwargs = dict(scene=scene, robot=robot, task=task, domain_randomization=domain_randomization)
+    env_kwargs = dict(
+        scene=scene,
+        robot=robot,
+        task=task,
+        domain_randomization=domain_randomization,
+        n_lidar_beams=n_lidar_beams,
+        lidar_fov_deg=lidar_fov_deg,
+        lidar_max_range=lidar_max_range,
+        max_episode_steps=max_episode_steps,
+    )
     vec_cls = SubprocVecEnv if n_envs > 1 else DummyVecEnv
     try:
         vec_env = make_vec_env(
@@ -130,7 +142,7 @@ def run_train(
         vec_env = VecFrameStack(vec_env, n_stack=FRAME_STACK_K)
         eval_env = VecFrameStack(eval_env, n_stack=FRAME_STACK_K)
 
-    policy_kwargs = policy_kwargs_for(policy, n_lidar_beams=N_LIDAR_BEAMS)
+    policy_kwargs = policy_kwargs_for(policy, n_lidar_beams=n_lidar_beams)
     sb3_policy_name = sb3_policy_name_for(policy)
 
     if policy == "p3":
@@ -204,7 +216,10 @@ def run_train(
         "steps": steps,
         "n_envs": n_envs,
         "seed": seed,
-        "n_lidar_beams": N_LIDAR_BEAMS,
+        "n_lidar_beams": n_lidar_beams,
+        "lidar_fov_deg": lidar_fov_deg,
+        "lidar_max_range": lidar_max_range,
+        "max_episode_steps": max_episode_steps,
         "domain_randomization": domain_randomization.to_dict() if domain_randomization else None,
         "bc_init": bc_init,
         "curriculum": curriculum,

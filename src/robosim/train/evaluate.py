@@ -7,6 +7,7 @@ from __future__ import annotations
 import numpy as np
 
 from robosim.envs.base_env import RoboSimEnv
+from robosim.train.run_config import env_kwargs_from_run
 
 
 def _load_model(checkpoint: str):
@@ -30,7 +31,9 @@ def evaluate_policy(
     max_episode_steps: int = 500,
 ) -> dict:
     model, is_recurrent = _load_model(checkpoint)
-    env = RoboSimEnv(scene=scene, robot=robot, task=task, max_episode_steps=max_episode_steps)
+    env_kwargs = env_kwargs_from_run(checkpoint)
+    env_kwargs.setdefault("max_episode_steps", max_episode_steps)
+    env = RoboSimEnv(scene=scene, robot=robot, task=task, **env_kwargs)
 
     successes = 0
     collisions = 0

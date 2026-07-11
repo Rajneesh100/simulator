@@ -201,4 +201,43 @@ observation from this same function so the real robot can emit an identical vect
 - **2026-07-12 — Native simulate side panels start hidden** (`show_left_ui/right_ui=
   False` on launch_passive; Tab/Shift+Tab restore them). Our HUD carries the info the
   panels duplicated, and the cleaner viewport matches the Isaac reference.
+- **2026-07-12 — Racing stack added as pure plugins: `robots/racecar.py`,
+  `scenes/racetrack.py`, `envs/tasks/race.py`.** The racecar is a 4-wheel
+  Ackermann-steered car whose action stays 2-dim — (throttle, steer) instead of
+  (v, omega) — so every env/train/teleop path works unchanged; `action_to_ctrl` does the
+  Ackermann per-wheel steer angles and acts as an open differential on the rear axle.
+  Gotcha found live: MuJoCo's automatic parent-child contact exclusion does NOT cover
+  grandchildren, and the front wheels (chassis → steering knuckle → wheel) collided with
+  the chassis, pinning the car at ~0 m/s under full throttle. Fixed with explicit
+  `spec.add_exclude(chassis, front_*_wheel)` pairs — these DO survive
+  `frame.attach_body` into the world spec. Racecar also normalizes wheel velocities in
+  `read_proprio` (its ~50 rad/s raw wheel speeds would blow past every other robot's
+  obs scale).
+- **2026-07-12 — Scripted movers extracted to `core/movers.py` with a new waypoint-loop
+  path type; view/teleop now animate them too.** The original axis-sine mover update
+  lived inside `RoboSimEnv`, so mocap obstacles only moved during env-driven runs
+  (train/play) and stood still in `view`/`teleop`. The shared module supports the
+  original axis-sine spec unchanged plus `{"path": "loop", "waypoints": [...], "period",
+  "phase", "z"}` — constant-speed travel around a closed polyline with yaw following the
+  tangent — used by racetrack opponent cars. Movers advance per physics step in all four
+  loops (env, view, teleop, play-via-env).
+- **2026-07-12 — Race task rewards progress-along-centerline, not distance-to-goal.**
+  The racetrack scene publishes its centerline waypoints in `task_info()`; the task
+  projects the robot onto that polyline each step and rewards Δarclength (so speed IS
+  the reward), with wrap handling at the start/finish line, a per-step ds clamp
+  (projection glitches must not mint reward), a centering penalty, crash-terminates on
+  collision, and a lap-completion bonus/success. The obs "goal" slot is repointed every
+  step to a lookahead point 2.5 m ahead on the centerline — the standard obs vector
+  doubles as "where does the track go" with zero layout changes.
+- **2026-07-12 — Lidar config and episode length are now per-run settings, recovered
+  automatically at play/evaluate time.** `train` grew `--lidar-beams/--lidar-fov/
+  --lidar-range/--max-episode-steps` (obs size changes with beam count), records them in
+  the run's config.yaml, and `play`/`evaluate` read that config.yaml (checkpoint dir or
+  its parent, via `train/run_config.py`) to rebuild a matching env — a checkpoint is
+  only usable with the obs space it was trained on. Racing default: 48 beams / 360 deg /
+  12 m ("fast lidar"); old runs without the keys fall back to env defaults.
+- **2026-07-12 — Overlapping visual road strips z-fight; alternate their heights by
+  0.8 mm.** The racetrack road is drawn as overlapping non-colliding box segments along
+  the centerline; coplanar overlaps rendered as bright striping. Alternating segment
+  z by (i % 2) · 0.0008 is invisible at viewing distance and kills the artifact.
 - (Further decisions get appended here as they're made — newest at the bottom.)

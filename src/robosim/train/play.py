@@ -13,6 +13,7 @@ import mujoco.viewer
 import numpy as np
 
 from robosim.envs.base_env import RoboSimEnv
+from robosim.train.run_config import env_kwargs_from_run
 from robosim.ui import overlay
 
 HUD_PERIOD = 0.1
@@ -37,7 +38,7 @@ def run_play(
     episodes: int = 5,
 ) -> None:
     model, is_recurrent = _load_model(checkpoint)
-    env = RoboSimEnv(scene=scene, robot=robot, task=task)
+    env = RoboSimEnv(scene=scene, robot=robot, task=task, **env_kwargs_from_run(checkpoint))
     world = env.world
     state = overlay.OverlayState()
     timer = overlay.HudTimer()

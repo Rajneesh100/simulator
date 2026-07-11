@@ -23,6 +23,7 @@ import mujoco
 import mujoco.viewer
 import numpy as np
 
+from robosim.core.movers import derive_movers, update_movers
 from robosim.core.world import build_world
 from robosim.envs.obs import build_obs
 from robosim.sensors.lidar import Lidar
@@ -87,6 +88,7 @@ def run_teleop(
     state = overlay.OverlayState()
     timer = overlay.HudTimer()
     lidar = Lidar()
+    movers = derive_movers(world.model, world.scene)
     chassis_id = world.model.body(world.root_body_name).id
     dt = world.model.opt.timestep
 
@@ -126,6 +128,8 @@ def run_teleop(
             steps = int(sim_budget / dt)
             sim_budget -= steps * dt
             for _ in range(steps):
+                if movers:
+                    update_movers(world.data, movers, world.data.time)
                 mujoco.mj_step(world.model, world.data)
                 if record_enabled:
                     pos, quat = world.robot_pose()

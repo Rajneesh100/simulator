@@ -82,6 +82,10 @@ def train(
         None,
         help="Difficulty schedule, e.g. '0:flat;50000:obstacles:count=3;150000:obstacles:count=10'",
     ),
+    lidar_beams: int = typer.Option(16, help="Lidar beam count (obs size changes with it)"),
+    lidar_fov: float = typer.Option(270.0, help="Lidar field of view in degrees"),
+    lidar_range: float = typer.Option(5.0, help="Lidar max range in meters"),
+    max_episode_steps: int = typer.Option(500, help="Control steps per episode (20 Hz)"),
 ):
     """Train a policy headless with SB3 PPO/SAC."""
     from robosim.envs.base_env import DomainRandomization
@@ -111,6 +115,10 @@ def train(
         bc_init=bc_init,
         domain_randomization=domain_randomization,
         curriculum=curriculum,
+        n_lidar_beams=lidar_beams,
+        lidar_fov_deg=lidar_fov,
+        lidar_max_range=lidar_range,
+        max_episode_steps=max_episode_steps,
     )
 
 
