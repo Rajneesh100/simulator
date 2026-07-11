@@ -54,9 +54,26 @@ def train(
     run_name: str = typer.Option(None, help="Run name under runs/ (default: auto)"),
     seed: int = typer.Option(0, help="Random seed"),
     bc_init: str = typer.Option(None, help="Path to a BC-pretrained policy .zip to init from"),
+    dr: bool = typer.Option(False, "--dr", help="Enable default domain randomization ranges"),
+    curriculum: str = typer.Option(
+        None,
+        help="Difficulty schedule, e.g. '0:flat;50000:obstacles:count=3;150000:obstacles:count=10'",
+    ),
 ):
     """Train a policy headless with SB3 PPO/SAC."""
+    from robosim.envs.base_env import DomainRandomization
     from robosim.train.train import run_train
+
+    domain_randomization = (
+        DomainRandomization(
+            friction_scale=(0.6, 1.4),
+            mass_scale=(0.8, 1.2),
+            lidar_noise_std=(0.0, 0.05),
+            lidar_dropout_prob=(0.0, 0.05),
+        )
+        if dr
+        else None
+    )
 
     run_train(
         task=task,
@@ -69,6 +86,8 @@ def train(
         run_name=run_name,
         seed=seed,
         bc_init=bc_init,
+        domain_randomization=domain_randomization,
+        curriculum=curriculum,
     )
 
 
@@ -99,6 +118,18 @@ def evaluate(
     from robosim.train.evaluate import run_evaluate
 
     run_evaluate(checkpoint, scene=scene, robot=robot, task=task, episodes=episodes, seed=seed)
+
+
+@app.command()
+def bc_train(
+    records: list[str] = typer.Option(..., help="One or more teleop --record .npz files"),
+    out: str = typer.Option(..., help="Output path for BC weights (.pt)"),
+    epochs: int = typer.Option(100, help="Training epochs"),
+):
+    """Train a small MLP via behavior cloning on recorded trajectories, saved for --bc-init."""
+    from robosim.train.bc import train_bc
+
+    train_bc(records, out, epochs=epochs)
 
 
 @app.command()

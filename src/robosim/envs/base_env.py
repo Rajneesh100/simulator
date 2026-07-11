@@ -75,6 +75,22 @@ class RoboSimEnv(gym.Env):
         self.lidar = Lidar(
             n_beams=n_lidar_beams, fov_deg=lidar_fov_deg, max_range=lidar_max_range
         )
+        self._refresh_derived_state()
+
+        action_dim = self.world.robot.action_dim()
+        self.action_space = spaces.Box(-1.0, 1.0, shape=(action_dim,), dtype=np.float32)
+        obs_size = obs_dim(n_lidar_beams, action_dim)
+        self.observation_space = spaces.Box(-10.0, 10.0, shape=(obs_size,), dtype=np.float32)
+
+        self._steps_per_action = physics.physics_steps_per_control_step()
+        self._prev_action = np.zeros(action_dim, dtype=np.float32)
+        self._task_state: dict[str, Any] = {}
+        self._elapsed_steps = 0
+        self._renderer: mujoco.Renderer | None = None
+
+    def _refresh_derived_state(self) -> None:
+        """(Re)derive ids/arrays that depend on the compiled model — called on init and
+        whenever set_scene() rebuilds self.world with a new scene (curriculum hook)."""
         self._chassis_id = self.world.model.body(self.world.root_body_name).id
         self._chassis_geom_ids = {
             self.world.model.geom(n).id for n in self.world.robot.collision_geom_names()
@@ -87,17 +103,26 @@ class RoboSimEnv(gym.Env):
                 pass
         self._base_friction = self.world.model.geom_friction.copy()
         self._base_mass = self.world.model.body_mass.copy()
+        self._movers = []
+        for mover in self.world.scene.moving_bodies():
+            mocap_id = self.world.model.body(mover["name"]).mocapid[0]
+            axis_vec = np.array([1.0, 0.0, 0.0] if mover["axis"] == "x" else [0.0, 1.0, 0.0])
+            self._movers.append({**mover, "mocap_id": mocap_id, "axis_vec": axis_vec})
 
-        action_dim = self.world.robot.action_dim()
-        self.action_space = spaces.Box(-1.0, 1.0, shape=(action_dim,), dtype=np.float32)
-        obs_size = obs_dim(n_lidar_beams, action_dim)
-        self.observation_space = spaces.Box(-10.0, 10.0, shape=(obs_size,), dtype=np.float32)
+    def _update_movers(self) -> None:
+        t = self.world.data.time
+        for m in self._movers:
+            offset = m["amplitude"] * np.sin(2 * np.pi * t / m["period"]) * m["axis_vec"]
+            self.world.data.mocap_pos[m["mocap_id"]] = np.array(m["base_pos"]) + offset
 
-        self._steps_per_action = physics.physics_steps_per_control_step()
-        self._prev_action = np.zeros(action_dim, dtype=np.float32)
-        self._task_state: dict[str, Any] = {}
-        self._elapsed_steps = 0
-        self._renderer: mujoco.Renderer | None = None
+    def set_scene(self, scene_arg: str) -> None:
+        """Rebuild the world with a new scene (same robot) — curriculum hook (idea.md
+        M5): training scripts call this via VecEnv.env_method() to advance difficulty
+        between stages. Rebuilds are relatively expensive (recompiles the MjSpec), so
+        this is meant to be called every N episodes, not every step."""
+        self.scene_arg = scene_arg
+        self.world = build_world(scene_arg, self.robot_arg)
+        self._refresh_derived_state()
 
     def _apply_domain_randomization(self, rng: np.random.Generator) -> dict[str, Any]:
         applied: dict[str, Any] = {}
@@ -132,12 +157,18 @@ class RoboSimEnv(gym.Env):
                 return True
         return False
 
-    def _compute_obs(self) -> np.ndarray:
-        pos, quat = self.world.robot_pose()
-        proprio = self.world.robot.read_proprio(self.world.model, self.world.data)
+    def _sense(self) -> np.ndarray:
+        """Lidar sense, cached into task_state so tasks (e.g. obstacle_nav's clearance
+        shaping) can read the same ranges reward() needs without re-raycasting."""
         ranges = self.lidar.sense(
             self.world.model, self.world.data, exclude_body_id=self._chassis_id, rng=self.np_random
         )
+        self._task_state["last_min_lidar"] = float(ranges.min())
+        return ranges
+
+    def _compute_obs(self, ranges: np.ndarray) -> np.ndarray:
+        pos, quat = self.world.robot_pose()
+        proprio = self.world.robot.read_proprio(self.world.model, self.world.data)
         goal = self._task_state.get("goal", (0.0, 0.0))
         return build_obs(ranges, pos[:2], quat, goal, proprio, self._prev_action)
 
@@ -149,7 +180,8 @@ class RoboSimEnv(gym.Env):
         self._task_state = self.task.reset(self.world, rng)
         self._prev_action = np.zeros(self.world.robot.action_dim(), dtype=np.float32)
         self._elapsed_steps = 0
-        obs = self._compute_obs()
+        ranges = self._sense()
+        obs = self._compute_obs(ranges)
         info = {"domain_randomization": dr_applied}
         return obs, info
 
@@ -159,16 +191,19 @@ class RoboSimEnv(gym.Env):
         for name, value in ctrl_map.items():
             self.world.data.actuator(name).ctrl[0] = value
         for _ in range(self._steps_per_action):
+            if self._movers:
+                self._update_movers()
             mujoco.mj_step(self.world.model, self.world.data)
 
         collided = self._collided()
+        ranges = self._sense()
         reward, terminated, task_info = self.task.reward(
             self.world, self._task_state, action, collided
         )
         self._prev_action = action
         self._elapsed_steps += 1
         truncated = self._elapsed_steps >= self.max_episode_steps
-        obs = self._compute_obs()
+        obs = self._compute_obs(ranges)
         info = {"collided": collided, **task_info}
         return obs, reward, terminated, truncated, info
 

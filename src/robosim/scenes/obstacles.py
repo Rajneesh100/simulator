@@ -28,6 +28,8 @@ class ObstaclesScene(Scene):
         self.seed = int(params.get("seed", 0))
         self.goal_distance = float(params.get("goal_distance", 5.0))
         self.maze = bool(int(params.get("maze", 0)))
+        self.moving = int(params.get("moving", 0))
+        self._movers: list[dict] = []
 
     def build(self, spec) -> None:
         spec.worldbody.add_geom(
@@ -43,6 +45,9 @@ class ObstaclesScene(Scene):
             self._build_maze(spec, rng)
         else:
             self._build_scatter(spec, rng)
+
+        if self.moving:
+            self._build_movers(spec, rng)
 
         spec.worldbody.add_geom(
             name="goal_marker",
@@ -105,8 +110,32 @@ class ObstaclesScene(Scene):
                 rgba=[0.6, 0.3, 0.3, 1.0],
             )
 
+    def _build_movers(self, spec, rng) -> None:
+        """T7: scripted moving obstacles along the path to the goal, oscillating along y."""
+        for i in range(self.moving):
+            frac = (i + 1) / (self.moving + 1)
+            x = frac * self._goal[0]
+            name = f"mover_{i}"
+            spec.worldbody.add_body(name=name, pos=[x, 0.0, 0.2], mocap=True).add_geom(
+                type=mujoco.mjtGeom.mjGEOM_BOX,
+                size=[0.15, 0.15, 0.2],
+                rgba=[0.8, 0.2, 0.7, 1.0],
+            )
+            self._movers.append(
+                {
+                    "name": name,
+                    "axis": "y",
+                    "amplitude": rng.uniform(0.6, 1.2),
+                    "period": rng.uniform(3.0, 6.0),
+                    "base_pos": (x, 0.0, 0.2),
+                }
+            )
+
     def spawn_pose(self) -> tuple[tuple[float, float, float], float]:
         return (0.0, 0.0, 0.0), 0.0
 
     def task_info(self) -> dict:
         return {"goal": self._goal, "seed": self.seed, "maze": self.maze}
+
+    def moving_bodies(self) -> list[dict]:
+        return self._movers

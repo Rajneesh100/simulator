@@ -107,4 +107,28 @@ observation from this same function so the real robot can emit an identical vect
   torch 2.13's default dynamo-based exporter combined with `dynamic_axes` produced a
   corrupted graph (shape-inference error, unrelated dims). The legacy exporter handles
   this small MLP policy correctly; revisit if a future torch drops the legacy path.
+- **2026-07-11 — Curriculum rebuilds the scene via `RoboSimEnv.set_scene()` +
+  `VecEnv.env_method`, not a lighter-weight in-place param change.** Scene geometry is
+  fixed at MjSpec-compile time, so "harder" (more obstacles, etc.) genuinely needs a
+  recompile. This is fine since curriculum stages are spaced thousands of steps apart,
+  not per-episode. `train --curriculum "0:flat;50000:obstacles:count=3"` schedules it.
+- **2026-07-11 — Moving obstacles (T7) use MuJoCo mocap bodies, driven by a per-step
+  callback in `RoboSimEnv.step()`**, not joints+actuators. Mocap bodies have no
+  dynamics — their pose is just written directly (`data.mocap_pos`) — which is simpler
+  and exactly matches "scripted" motion; `--scene obstacles:moving=N` places N of them.
+- **2026-07-11 — BC net (`train/bc.py`) must use `Tanh` activations, not `ReLU`, to
+  match SB3 `ActorCriticPolicy`'s default `activation_fn`.** Initially built the BC net
+  with ReLU; state dict *shapes* matched SB3's policy fine (`load_state_dict` didn't
+  error), but the network computed a different function at inference, so BC-init showed
+  zero improvement over a random policy. After switching to Tanh, loading BC weights
+  into an untrained PPO policy jumped deterministic rollout reward from -3.04 (random)
+  to +11.64 (immediate success) with zero PPO steps — confirms the load path is correct.
+  Lesson: matching a state dict's shapes is not sufficient to reuse another framework's
+  weights; the module graph (activations included) must match exactly.
+- **2026-07-11 — No real teleop recording available for BC in this environment (no
+  interactive display for a human to drive WASD).** `train/bc.py` includes
+  `generate_scripted_demo()`, a proportional "aim at the goal" controller that produces
+  `.npz` files in the exact same format `teleop --record` writes, used to validate the
+  BC pipeline end-to-end. It is a test fixture, not a replacement for real demonstrations
+  — swap in actual `teleop --record` output for real BC training.
 - (Further decisions get appended here as they're made — newest at the bottom.)

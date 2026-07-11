@@ -47,19 +47,44 @@ class LearningCurveCallback(BaseCallback):
                     f.write(f"{t},{r}\n")
 
 
-def _make_env_fn(scene, robot, task, dr, seed_offset, render_mode=None):
-    def _fn():
-        env = RoboSimEnv(
-            scene=scene,
-            robot=robot,
-            task=task,
-            n_lidar_beams=N_LIDAR_BEAMS,
-            domain_randomization=dr,
-            render_mode=render_mode,
-        )
-        return env
+def parse_curriculum(spec: str) -> list[tuple[int, str]]:
+    """Parse '0:flat;50000:obstacles:count=3;150000:obstacles:count=10' into
+    [(0, 'flat'), (50000, 'obstacles:count=3'), (150000, 'obstacles:count=10')]."""
+    stages = []
+    for chunk in spec.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        timestep_str, _, scene_arg = chunk.partition(":")
+        stages.append((int(timestep_str), scene_arg))
+    return sorted(stages, key=lambda s: s[0])
 
-    return _fn
+
+class CurriculumCallback(BaseCallback):
+    """Advances scene difficulty on both training and eval envs at fixed timesteps
+    (idea.md M5: "training script supports scheduled progression"). Rebuilds the MjSpec
+    per sub-env via VecEnv.env_method, so stages should be spaced widely (thousands of
+    steps apart), not every rollout.
+    """
+
+    def __init__(self, stages: list[tuple[int, str]], eval_env=None):
+        super().__init__()
+        self.stages = stages
+        self.eval_env = eval_env
+        self._next_stage_idx = 0
+
+    def _on_step(self) -> bool:
+        while (
+            self._next_stage_idx < len(self.stages)
+            and self.num_timesteps >= self.stages[self._next_stage_idx][0]
+        ):
+            _, scene_arg = self.stages[self._next_stage_idx]
+            self.training_env.env_method("set_scene", scene_arg)
+            if self.eval_env is not None:
+                self.eval_env.env_method("set_scene", scene_arg)
+            print(f"[curriculum] t={self.num_timesteps}: scene -> '{scene_arg}'")
+            self._next_stage_idx += 1
+        return True
 
 
 def run_train(
@@ -74,6 +99,7 @@ def run_train(
     seed: int = 0,
     bc_init: str | None = None,
     domain_randomization: DomainRandomization | None = None,
+    curriculum: str | None = None,
 ) -> Path:
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -164,6 +190,10 @@ def run_train(
         deterministic=True,
     )
     curve_cb = LearningCurveCallback(run_dir / "learning_curve.csv")
+    callbacks = [checkpoint_cb, eval_cb, curve_cb]
+    if curriculum:
+        stages = parse_curriculum(curriculum)
+        callbacks.append(CurriculumCallback(stages, eval_env=eval_env))
 
     config = {
         "task": task,
@@ -177,11 +207,12 @@ def run_train(
         "n_lidar_beams": N_LIDAR_BEAMS,
         "domain_randomization": domain_randomization.to_dict() if domain_randomization else None,
         "bc_init": bc_init,
+        "curriculum": curriculum,
     }
     with open(run_dir / "config.yaml", "w") as f:
         yaml.safe_dump(config, f)
 
-    model.learn(total_timesteps=steps, callback=CallbackList([checkpoint_cb, eval_cb, curve_cb]))
+    model.learn(total_timesteps=steps, callback=CallbackList(callbacks))
     final_path = run_dir / "final_model.zip"
     model.save(str(final_path))
     print(f"[train] saved final model to {final_path}")
