@@ -34,9 +34,24 @@ uv run robosim export --checkpoint runs/<run>/best_model.zip --out policy.onnx -
 uv run robosim bc-train --records runs/demo1.npz --out bc.pt
 ```
 
-`view`/`teleop`/`play` open MuJoCo's native interactive viewer (orbit/pan/zoom with the
-mouse; `space`=pause, `.`=single-step, `r`=reset, `c`=camera-follow, `l`=lidar-debug,
-`t`=trajectory-trail in `view`; `w/a/s/d`+`space` to drive in `teleop`).
+`view`/`teleop`/`play` open MuJoCo's native interactive viewer with an Isaac-Sim-style
+dark theme: gradient-dark viewport, 0.5 m ground grid, world-axes gizmo, and an on-screen
+HUD (sim time, speed, real-time factor, physics steps/sec, robot pose/velocity — plus
+live reward terms in `play` and drive command + REC counter in `teleop`).
+
+Mouse orbits/pans/zooms (native). Keys, shared across all three modes:
+
+| Key | Action | | Key | Action |
+|---|---|---|---|---|
+| `space` | pause / resume (`teleop`: stop driving) | | `l` | lidar rays overlay |
+| `.` | single-step while paused | | `x` | contact points + forces |
+| `r` | reset robot to spawn | | `t` | trajectory trail |
+| `-` / `=` | sim speed 0.1x – 5x | | `g` | goal beacon |
+| `c` | camera follow-robot | | `p` | screenshot → `runs/screenshots/` |
+| `h` | hide/show HUD | | `Tab` / `F1` | native panel / native help |
+
+`teleop` drives with `w/s` (forward/back) and `a/d` (turn), tap-to-set ±0.25 per press.
+`UI_CHECKLIST.md` is a 2-minute interactive walkthrough of all of the above.
 
 ### Scenes
 

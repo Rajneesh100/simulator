@@ -145,4 +145,35 @@ observation from this same function so the real robot can emit an identical vect
   `play` live: Python block-buffers stdout when it's not a TTY (and even interactively,
   `\r`-only lines don't trigger line-buffering's flush-on-`\n`), so the HUD never
   actually appeared without an explicit flush. Fixed in `ui/view.py` and `train/play.py`.
+- **2026-07-11 — Isaac-feel UI pass: theme lives in `core/theme.py`, chrome in
+  `ui/overlay.py`.** The dark skybox/grid are MjSpec assets fixed at compile time, so
+  the theme is applied by `core/world.py` — placing it under `core/` keeps the import
+  graph acyclic (core never imports ui). It is presentation-only by contract: nothing in
+  theme.py may touch option/solver/friction. Grid = builtin checker texture with
+  `mark=edge` on a plane material (texuniform, 0.5 m cells); ground planes are themed by
+  name via `Scene.ground_geom_names()` — heightfield terrain keeps its scene-chosen
+  look. Envs compile the same themed model (adds ~1.5 MB of texture per env; negligible,
+  and `render_mode="rgb_array"` frames match the viewer look).
+- **2026-07-11 — HUD uses the passive viewer's native `set_texts` overlay API**
+  (mujoco ≥ 3.3; present in our 3.10): two-column text boxes at grid positions — no
+  dearpygui side window needed for anything in idea.md's must-have list. Debug overlays
+  (lidar rays, trail, goal beacon) draw `mjGEOM_LINE` connectors into `viewer.user_scn`
+  (`mjv_initGeom` + `mjv_connector`; line width is in pixels); contact points/forces are
+  just `viewer.opt.flags[mjVIS_CONTACTPOINT/CONTACTFORCE]`. World-axes gizmo is
+  `opt.frame = mjFRAME_WORLD`. All shared across view/teleop/play via `ui/overlay.py`,
+  whose key/camera/timing logic is plain functions on a plain state object —
+  unit-testable without a window (tests/test_ui.py, 13 tests).
+- **2026-07-11 — Viewer loops repaced to a wall-clock budget.** Old loops did one
+  mj_step + sleep(timestep) per iteration → a 500 Hz Python loop that couldn't hold
+  real-time once overlay work was added, and sim-speed changes distorted it. New loop:
+  each ~60 fps UI frame runs `int(wall_dt × speed / timestep)` physics steps (capped),
+  so UI rate and physics rate are decoupled, runtime speed 0.1x–5x (`-`/`=` keys) is
+  honest, and the HUD's real-time factor is measured, not assumed. Teleop records obs
+  per physics step inside the batch, unchanged .npz format.
+- **2026-07-11 — Screenshot key ('p') re-renders offscreen instead of grabbing the GUI
+  framebuffer.** The passive handle exposes no framebuffer read, so a throwaway
+  `mujoco.Renderer` copies `viewer.cam` and renders 1280×720 to
+  `runs/screenshots/` (offwidth/offheight raised in the theme). Creating a second GL
+  context while the GUI runs worked in offscreen tests but is guarded try/except in the
+  loops — worst case it prints a warning instead of killing the session.
 - (Further decisions get appended here as they're made — newest at the bottom.)

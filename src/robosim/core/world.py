@@ -12,7 +12,7 @@ from typing import Any
 import mujoco
 import numpy as np
 
-from robosim.core import physics
+from robosim.core import physics, theme
 from robosim.core.registry import get_robot, get_scene
 
 
@@ -76,16 +76,19 @@ def build_world(
     physics.apply_to_spec(spec)
 
     if add_ground_light:
+        theme.apply_visual_theme(spec)
         spec.worldbody.add_light(
             name="sun",
             pos=[0, 0, 3],
-            dir=[0, 0, -1],
+            dir=[-0.3, 0.2, -0.9],
             type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL,
         )
 
     scene_cls = get_scene(scene_name)
     scene = scene_cls(**scene_params)
     scene.build(spec)
+    if add_ground_light:
+        theme.assign_ground_material(spec, scene.ground_geom_names())
 
     robot_cls = get_robot(robot_name)
     robot = robot_cls(**robot_params)

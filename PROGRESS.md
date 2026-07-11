@@ -63,10 +63,22 @@ uv run robosim train --task goal_reach --scene flat --steps 300000 --n-envs 8
   primary path per idea.md's "PPO (primary)" note; SAC shares the same policy_kwargs
   path and should work, but hasn't been smoke-tested here the way PPO was.
 
+## UI polish pass (post-M6)
+
+Isaac-Sim-feel viewer chrome added on top of the milestones above: dark-themed viewport
+(gradient skybox + 0.5 m grid floor, `core/theme.py`), on-screen HUD via the passive
+viewer's native `set_texts` (time / speed / RTF / physics-rate / pose / velocity, reward
+terms in play, drive+REC in teleop), runtime-toggleable debug overlays (lidar rays,
+contact points/forces, trail, goal beacon), camera follow, 0.1x–5x runtime speed keys,
+and a screenshot key. Verified headlessly (every scene + every overlay rendered
+offscreen and inspected; 13 new unit tests) plus live process launches of all three
+modes — `play` ran a full episode to success under the new chrome. Human-in-the-loop
+items live in `UI_CHECKLIST.md` (2-minute walkthrough).
+
 ## Next steps
 
-1. Sit down and actually drive `robosim teleop` with the mouse/keyboard — the process
-   launches and runs correctly, but no one has manually exercised camera orbit or WASD.
+1. Walk through `UI_CHECKLIST.md` (~2 min) — the only untested surface is literal
+   mouse/keyboard input in the live window.
 2. Record a real teleop session and re-run `bc-train` on it instead of the scripted demo.
 3. Longer PPO runs on `obstacle_nav`/`corridor` to compare P1 vs P2 vs P3/P4 per idea.md's
    task-ladder table.
