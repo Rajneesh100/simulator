@@ -36,6 +36,13 @@ class Scene(ABC):
         """Scene-specific info a task layer might use (goal position, bounds, etc.)."""
         return {}
 
+    def ground_geom_names(self) -> list[str]:
+        """Geoms that are "ground" for collision purposes — touching them (e.g. a wheel
+        grazing the floor, or the chassis briefly scraping flat terrain mid-turn) is
+        normal driving, not a collision. Defaults match every built-in scene's ground
+        geom name; override if a scene names its ground/terrain geom differently."""
+        return ["ground", "terrain"]
+
     def moving_bodies(self) -> list[dict[str, Any]]:
         """Optional: scripted moving-body specs for tasks like T7 moving_obstacle.
 

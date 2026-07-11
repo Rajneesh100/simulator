@@ -90,4 +90,21 @@ observation from this same function so the real robot can emit an identical vect
   `user_scn` scene extras. No dearpygui side-panel needed yet — the passive viewer's
   built-in stats/overlay is sufficient for the required HUD fields; revisit only if a
   control that MuJoCo's viewer truly lacks becomes necessary.
+- **2026-07-11 — Wheel mount offset increased (`WHEEL_MOUNT_Z` -0.01 → -0.03) and
+  "collision" excludes the scene's own ground/terrain geom.** Original clearance (7mm)
+  let the chassis graze the ground under any real driving dynamics, firing spurious
+  collision penalties ~15-18% of steps even on an empty flat scene with a random policy.
+  Real fix is semantic, not just more clearance: `Scene.ground_geom_names()` (default
+  `["ground", "terrain"]`) is excluded from `RoboSimEnv._collided()` — touching the floor
+  during a turn isn't a crash, hitting a wall/obstacle is. Increased clearance (~2.7cm)
+  on top of that for physical realism.
+- **2026-07-11 — Training callback reads `model.ep_info_buffer` directly, not
+  `logger.name_to_value["rollout/ep_rew_mean"]`.** SB3 only populates that logger key
+  *after* `on_rollout_end` fires, so it's always one iteration stale (empty on the very
+  first). `ep_info_buffer` is updated live during rollout collection, so it's correct
+  immediately.
+- **2026-07-11 — ONNX export forces the legacy TorchScript exporter (`dynamo=False`).**
+  torch 2.13's default dynamo-based exporter combined with `dynamic_axes` produced a
+  corrupted graph (shape-inference error, unrelated dims). The legacy exporter handles
+  this small MLP policy correctly; revisit if a future torch drops the legacy path.
 - (Further decisions get appended here as they're made — newest at the bottom.)

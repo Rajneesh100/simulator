@@ -79,6 +79,12 @@ class RoboSimEnv(gym.Env):
         self._chassis_geom_ids = {
             self.world.model.geom(n).id for n in self.world.robot.collision_geom_names()
         }
+        self._ground_geom_ids = set()
+        for n in self.world.scene.ground_geom_names():
+            try:
+                self._ground_geom_ids.add(self.world.model.geom(n).id)
+            except KeyError:
+                pass
         self._base_friction = self.world.model.geom_friction.copy()
         self._base_mass = self.world.model.body_mass.copy()
 
@@ -120,7 +126,9 @@ class RoboSimEnv(gym.Env):
         data = self.world.data
         for i in range(data.ncon):
             c = data.contact[i]
-            if c.geom1 in self._chassis_geom_ids or c.geom2 in self._chassis_geom_ids:
+            if c.geom1 in self._chassis_geom_ids and c.geom2 not in self._ground_geom_ids:
+                return True
+            if c.geom2 in self._chassis_geom_ids and c.geom1 not in self._ground_geom_ids:
                 return True
         return False
 

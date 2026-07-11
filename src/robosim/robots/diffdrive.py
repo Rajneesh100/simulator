@@ -15,7 +15,7 @@ from robosim.robots.base import Robot
 CHASSIS_HALF = (0.12, 0.09, 0.05)
 WHEEL_RADIUS = 0.045
 WHEEL_HALF_WIDTH = 0.02
-WHEEL_MOUNT_Z = -0.01  # wheel body offset below chassis origin, in chassis-local frame
+WHEEL_MOUNT_Z = -0.03  # wheel body offset below chassis origin, in chassis-local frame
 TRACK_HALF_WIDTH = 0.11  # distance from center to each wheel
 CASTER_RADIUS = 0.02
 MAX_LINEAR_VEL = 0.5  # m/s

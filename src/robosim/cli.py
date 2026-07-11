@@ -101,5 +101,17 @@ def evaluate(
     run_evaluate(checkpoint, scene=scene, robot=robot, task=task, episodes=episodes, seed=seed)
 
 
+@app.command()
+def export(
+    checkpoint: str = typer.Option(..., help="Path to a trained (non-recurrent) model .zip"),
+    out: str = typer.Option(..., help="Output .onnx path"),
+    obs_dim: int = typer.Option(..., help="Observation vector dimension"),
+):
+    """Export a trained policy to ONNX, with an int8-quantized inference sanity check."""
+    from robosim.train.export import export_onnx
+
+    export_onnx(checkpoint, out, obs_dim)
+
+
 if __name__ == "__main__":
     app()
