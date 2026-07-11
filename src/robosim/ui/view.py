@@ -72,10 +72,14 @@ def run_view(
 
     print("robosim view — mouse: orbit/pan/zoom · Tab: native panel · F1: native help")
     print("keys: space pause · . step · r reset · -/= speed · c follow · "
-          "l lidar · x contacts · t trail · g goal · p screenshot · h hud", flush=True)
+          "1 lidar · x contacts · t trail · 2 goal · p screenshot · h hud", flush=True)
 
     with mujoco.viewer.launch_passive(
-        world.model, world.data, key_callback=_make_key_callback(state, world)
+        world.model,
+        world.data,
+        key_callback=_make_key_callback(state, world),
+        show_left_ui=False,
+        show_right_ui=False,
     ) as viewer:
         overlay.init_camera(viewer.cam, world.spawn_pos)
         last_wall = time.perf_counter()

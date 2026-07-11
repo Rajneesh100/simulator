@@ -21,22 +21,28 @@ import numpy as np
 
 SPEED_LADDER = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0]
 
-RGBA_TRAIL = (0.25, 0.62, 1.0, 0.85)
-RGBA_LIDAR_HIT = (1.0, 0.25, 0.2, 0.9)
-RGBA_LIDAR_MISS = (0.45, 0.5, 0.55, 0.25)
-RGBA_GOAL = (0.15, 0.95, 0.35, 0.9)
+RGBA_TRAIL = np.array([0.25, 0.62, 1.0, 0.85], dtype=np.float32)
+RGBA_LIDAR_HIT = np.array([1.0, 0.25, 0.2, 0.9], dtype=np.float32)
+RGBA_LIDAR_MISS = np.array([0.45, 0.5, 0.55, 0.25], dtype=np.float32)
+RGBA_GOAL = np.array([0.15, 0.95, 0.35, 0.9], dtype=np.float32)
 
 TRAIL_MAX_POINTS = 400
 TRAIL_MIN_SPACING = 0.02  # meters between stored trail points
+TRAIL_MAX_SEGMENTS = 120  # drawn per frame (subsampled) — keeps the viewer lock cheap
+
+_EYE3 = np.eye(3).flatten()
+_ZERO3 = np.zeros(3)
 
 FONT_HUD = mujoco.mjtFontScale.mjFONTSCALE_150
 FONT_HINTS = mujoco.mjtFontScale.mjFONTSCALE_100
 GRID = mujoco.mjtGridPos
 
+# HUD strings must be pure ASCII — mujoco's overlay bitmap font renders anything else
+# as garbage glyphs (a real bug we hit with degree signs and omega).
 KEY_HINTS = (
     "space pause   .  step   r reset   -/=  speed",
-    "c follow   l lidar   x contacts   t trail   g goal",
-    "p screenshot   h hud   F1 native help",
+    "c follow   1 lidar   x contacts   t trail   2 goal",
+    "p screenshot   h hud   tab panel   F1 native help",
 )
 
 
@@ -77,6 +83,14 @@ def handle_common_key(state: OverlayState, keycode: int, world=None) -> bool:
     """Shared key bindings for all three viewer modes. Returns True if consumed.
 
     GLFW delivers letter keys as uppercase ASCII codes.
+
+    Key choice is constrained by MuJoCo's built-in viewer: EVERY letter A-Z is a native
+    visualization shortcut that fires alongside our callback and cannot be suppressed
+    from the passive API. Letters whose native effect is an mjvOption flag are safe —
+    apply_vis_flags() pins those flags back every frame. Letters whose native effect
+    is an internal render-scene flag (unreachable) are avoided entirely: that's why
+    lidar is '1' (L = additive blending) and goal is '2' (G = fog). Digit keys natively
+    toggle geom-group visibility, which apply_vis_flags() also pins.
     """
     char = chr(keycode).lower() if 0 < keycode < 256 else ""
     if char == " ":
@@ -90,12 +104,12 @@ def handle_common_key(state: OverlayState, keycode: int, world=None) -> bool:
         state.trail.clear()
     elif char == "c":
         state.follow = not state.follow
-    elif char == "l":
+    elif char == "1":
         state.show_lidar = not state.show_lidar
     elif char == "t":
         state.show_trail = not state.show_trail
         state.trail.clear()
-    elif char == "g":
+    elif char == "2":
         state.show_goal = not state.show_goal
     elif char == "x":
         state.show_contacts = not state.show_contacts
@@ -134,11 +148,34 @@ def apply_camera(cam, model, root_body_name: str, state: OverlayState) -> None:
         cam.trackbodyid = -1
 
 
+# mjvOption flags pinned to a fixed value every frame. MuJoCo's native viewer binds
+# every letter key to a visualization toggle and fires them alongside our key callback
+# (unsuppressible from the passive API) — e.g. D hides all static geometry, X kills
+# textures, T makes everything transparent, A draws autoconnect lines. Pinning reverts
+# any such native toggle within one frame. Cost: the native panel checkboxes for these
+# specific flags won't stick — our own keys are the control surface for them.
+_PINNED_VIS_FLAGS = (
+    (mujoco.mjtVisFlag.mjVIS_STATIC, True),  # native 'D' (teleop had used it to drive!)
+    (mujoco.mjtVisFlag.mjVIS_TEXTURE, True),  # native 'X' — our contacts key
+    (mujoco.mjtVisFlag.mjVIS_TRANSPARENT, False),  # native 'T' — our trail key
+    (mujoco.mjtVisFlag.mjVIS_AUTOCONNECT, False),  # native 'A'
+    (mujoco.mjtVisFlag.mjVIS_CONVEXHULL, False),  # native 'H' — our hud key
+    (mujoco.mjtVisFlag.mjVIS_CONTACTSPLIT, False),  # native 'P' — our screenshot key
+)
+
+
 def apply_vis_flags(opt, state: OverlayState) -> None:
-    """World-axes gizmo always on; contact points/forces toggleable at runtime."""
+    """World-axes gizmo always on; contact points/forces toggleable at runtime; every
+    other flag we depend on is pinned against native-shortcut interference."""
     opt.frame = mujoco.mjtFrame.mjFRAME_WORLD
     opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = state.show_contacts
     opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = state.show_contacts
+    for flag, value in _PINNED_VIS_FLAGS:
+        opt.flags[flag] = value
+    # Native digit keys toggle geom/site group visibility — keep all groups visible
+    # (our '1'/'2' overlay keys land on these natively).
+    opt.geomgroup[:] = 1
+    opt.sitegroup[:] = 1
 
 
 class HudTimer:
@@ -190,10 +227,10 @@ def _add_line(scn, from_, to, rgba, width_px=2.0) -> None:
     mujoco.mjv_initGeom(
         g,
         type=mujoco.mjtGeom.mjGEOM_LINE,
-        size=np.zeros(3),
-        pos=np.zeros(3),
-        mat=np.eye(3).flatten(),
-        rgba=np.asarray(rgba, dtype=np.float32),
+        size=_ZERO3,
+        pos=_ZERO3,
+        mat=_EYE3,
+        rgba=rgba,
     )
     mujoco.mjv_connector(
         g,
@@ -214,8 +251,8 @@ def _add_sphere(scn, pos, rgba, radius) -> None:
         type=mujoco.mjtGeom.mjGEOM_SPHERE,
         size=np.array([radius, radius, radius]),
         pos=np.asarray(pos, dtype=np.float64),
-        mat=np.eye(3).flatten(),
-        rgba=np.asarray(rgba, dtype=np.float32),
+        mat=_EYE3,
+        rgba=rgba,
     )
     scn.ngeom += 1
 
@@ -240,6 +277,10 @@ def push_trail(state: OverlayState, pos) -> None:
 
 def draw_trail(scn, trail) -> None:
     pts = list(trail)
+    # Subsample long trails: this runs every frame while holding the viewer lock, so
+    # cap the connector count instead of drawing all 400 stored points.
+    stride = max(1, -(-len(pts) // TRAIL_MAX_SEGMENTS))  # ceil division
+    pts = pts[::stride]
     for a, b in zip(pts, pts[1:]):
         _add_line(scn, a, b, RGBA_TRAIL, 3.0)
 
@@ -264,16 +305,17 @@ def hud_status_texts(
     yaw_deg: float,
     speed_mps: float,
 ) -> list[tuple]:
-    speed_str = f"{state.speed:g}x" + ("   PAUSED" if state.paused else "")
-    labels = "mode\ntime\nspeed\nrtf\nphysics\npos\nvel"
+    speed_str = f"{state.speed:g}x" + ("  PAUSED" if state.paused else "")
+    labels = "mode\ntime\nspeed\nrtf\nphysics\npos\nyaw\nvel"
     values = (
         f"{mode}\n"
-        f"{sim_time:8.2f} s\n"
+        f"{sim_time:.2f} s\n"
         f"{speed_str}\n"
-        f"{timer.rtf():5.2f}\n"
-        f"{timer.steps_per_sec():7,.0f} steps/s\n"
-        f"({pos[0]:+.2f}, {pos[1]:+.2f})  z {pos[2]:+.2f}  yaw {yaw_deg:+.0f}°\n"
-        f"{speed_mps:5.2f} m/s"
+        f"{timer.rtf():.2f}\n"
+        f"{timer.steps_per_sec():,.0f} steps/s\n"
+        f"({pos[0]:+.2f}, {pos[1]:+.2f}, {pos[2]:+.2f})\n"
+        f"{yaw_deg:+.0f} deg\n"
+        f"{speed_mps:.2f} m/s"
     )
     texts = [(FONT_HUD, GRID.mjGRID_TOPLEFT, labels, values)]
     texts.append((FONT_HINTS, GRID.mjGRID_BOTTOMLEFT, "\n".join(KEY_HINTS), None))

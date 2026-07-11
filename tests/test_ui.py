@@ -77,11 +77,11 @@ def test_handle_common_key_state_machine():
     assert state.paused and state.single_step
     assert overlay.handle_common_key(state, ord("C"))
     assert state.follow
-    assert overlay.handle_common_key(state, ord("L"))
+    assert overlay.handle_common_key(state, ord("1"))
     assert state.show_lidar
     assert overlay.handle_common_key(state, ord("X"))
     assert state.show_contacts
-    assert overlay.handle_common_key(state, ord("G"))
+    assert overlay.handle_common_key(state, ord("2"))
     assert not state.show_goal
     assert overlay.handle_common_key(state, ord("H"))
     assert not state.show_hud
@@ -91,6 +91,10 @@ def test_handle_common_key_state_machine():
     assert state.speed == 2.0
     assert overlay.handle_common_key(state, ord("-"))
     assert state.speed == 1.0
+    # L and G must stay UNBOUND: their native viewer effects (additive blending, fog)
+    # are internal render-scene flags we cannot pin back.
+    assert not overlay.handle_common_key(state, ord("L"))
+    assert not overlay.handle_common_key(state, ord("G"))
     assert not overlay.handle_common_key(state, ord("Q"))  # unbound key not consumed
     state.trail.append(np.zeros(3))
     assert overlay.handle_common_key(state, ord("R"), world=None)
@@ -128,6 +132,86 @@ def test_apply_vis_flags():
     state.show_contacts = False
     overlay.apply_vis_flags(opt, state)
     assert not opt.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT]
+
+
+def test_apply_vis_flags_pins_native_key_side_effects():
+    """MuJoCo's native viewer toggles these via letter/digit shortcuts that fire
+    alongside our key callback; apply_vis_flags must revert them every frame."""
+    opt = mujoco.MjvOption()
+    state = overlay.OverlayState()
+    # Simulate native shortcut damage: D hid static geometry, X killed textures,
+    # T made everything transparent, A drew autoconnect lines, '0' hid geom group 0.
+    opt.flags[mujoco.mjtVisFlag.mjVIS_STATIC] = False
+    opt.flags[mujoco.mjtVisFlag.mjVIS_TEXTURE] = False
+    opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = True
+    opt.flags[mujoco.mjtVisFlag.mjVIS_AUTOCONNECT] = True
+    opt.flags[mujoco.mjtVisFlag.mjVIS_CONVEXHULL] = True
+    opt.geomgroup[0] = 0
+    overlay.apply_vis_flags(opt, state)
+    assert opt.flags[mujoco.mjtVisFlag.mjVIS_STATIC]
+    assert opt.flags[mujoco.mjtVisFlag.mjVIS_TEXTURE]
+    assert not opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT]
+    assert not opt.flags[mujoco.mjtVisFlag.mjVIS_AUTOCONNECT]
+    assert not opt.flags[mujoco.mjtVisFlag.mjVIS_CONVEXHULL]
+    assert all(opt.geomgroup)
+
+
+def test_teleop_drive_keys():
+    from robosim.ui.teleop import (
+        KEY_DOWN,
+        KEY_LEFT,
+        KEY_RIGHT,
+        KEY_UP,
+        DriveState,
+        handle_drive_key,
+    )
+
+    drive = DriveState()
+    assert handle_drive_key(drive, KEY_UP)
+    assert drive.v == 0.25
+    for _ in range(5):
+        handle_drive_key(drive, KEY_UP)
+    assert drive.v == 1.0  # clamped
+    assert handle_drive_key(drive, KEY_LEFT)
+    assert drive.omega == 0.25
+    for _ in range(6):
+        handle_drive_key(drive, KEY_RIGHT)
+    assert drive.omega == -1.0  # clamped
+    assert handle_drive_key(drive, KEY_DOWN)
+    assert drive.v == 0.75
+    assert handle_drive_key(drive, ord(" "))
+    assert drive.v == 0.0 and drive.omega == 0.0
+    # letters must NOT drive (they collide with native render shortcuts)
+    assert not handle_drive_key(drive, ord("W"))
+    assert not handle_drive_key(drive, ord("D"))
+
+
+def test_hud_strings_are_pure_ascii():
+    """mujoco's overlay bitmap font renders non-ASCII as garbage glyphs."""
+    state = overlay.OverlayState(paused=True)
+    timer = overlay.HudTimer()
+    texts = overlay.hud_status_texts(
+        "teleop", 92.75, state, timer, np.array([0.88, 0.0, 0.07]), -0.8, 0.0
+    )
+    texts.append(overlay.overlay_toggle_line(state))
+    for _, _, col1, col2 in texts:
+        for s in (col1, col2):
+            if s:
+                assert all(ord(ch) < 128 for ch in s), f"non-ascii in HUD: {s!r}"
+    for line in overlay.KEY_HINTS:
+        assert all(ord(ch) < 128 for ch in line)
+
+
+def test_draw_trail_subsamples_long_trails():
+    world = build_world("flat", "diffdrive")
+    renderer = _themed_render(world)
+    scn = renderer.scene
+    base = scn.ngeom
+    state = overlay.OverlayState()
+    for i in range(overlay.TRAIL_MAX_POINTS):
+        state.trail.append(np.array([i * 0.05, 0.0, 0.05]))
+    overlay.draw_trail(scn, state.trail)
+    assert scn.ngeom - base <= overlay.TRAIL_MAX_SEGMENTS
 
 
 def test_draw_helpers_add_geoms_and_render():

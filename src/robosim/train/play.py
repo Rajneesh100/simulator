@@ -44,7 +44,7 @@ def run_play(
     control_dt = world.model.opt.timestep * env._steps_per_action
 
     print("robosim play — space pause · . step · -/= speed · c follow · "
-          "l lidar · x contacts · t trail · g goal · p screenshot · h hud", flush=True)
+          "1 lidar · x contacts · t trail · 2 goal · p screenshot · h hud", flush=True)
 
     def key_callback(keycode):
         overlay.handle_common_key(state, keycode, world=None)  # no mid-episode reset
@@ -52,7 +52,11 @@ def run_play(
     successes = 0
 
     with mujoco.viewer.launch_passive(
-        world.model, world.data, key_callback=key_callback
+        world.model,
+        world.data,
+        key_callback=key_callback,
+        show_left_ui=False,
+        show_right_ui=False,
     ) as viewer:
         overlay.init_camera(viewer.cam, world.spawn_pos)
         last_hud = 0.0

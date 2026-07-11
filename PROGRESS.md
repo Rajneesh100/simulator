@@ -75,6 +75,14 @@ offscreen and inspected; 13 new unit tests) plus live process launches of all th
 modes — `play` ran a full episode to success under the new chrome. Human-in-the-loop
 items live in `UI_CHECKLIST.md` (2-minute walkthrough).
 
+First live user test caught a real one: driving with WASD wireframed the scene and hid
+the static world, because MuJoCo's native viewer binds every letter A–Z to a render
+shortcut that fires alongside our key handler and can't be suppressed. Fixed by pinning
+all recoverable `mjvOption` flags every frame, moving teleop to arrow-key driving, and
+rebinding lidar/goal to `1`/`2` (details in the CLAUDE.md decision log). The same
+screenshot exposed non-ASCII glyphs garbling in MuJoCo's overlay font — HUD text is
+ASCII-only now, enforced by test.
+
 ## Next steps
 
 1. Walk through `UI_CHECKLIST.md` (~2 min) — the only untested surface is literal

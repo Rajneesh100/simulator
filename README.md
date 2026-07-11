@@ -43,14 +43,23 @@ Mouse orbits/pans/zooms (native). Keys, shared across all three modes:
 
 | Key | Action | | Key | Action |
 |---|---|---|---|---|
-| `space` | pause / resume (`teleop`: stop driving) | | `l` | lidar rays overlay |
+| `space` | pause / resume (`teleop`: stop driving) | | `1` | lidar rays overlay |
 | `.` | single-step while paused | | `x` | contact points + forces |
 | `r` | reset robot to spawn | | `t` | trajectory trail |
-| `-` / `=` | sim speed 0.1x – 5x | | `g` | goal beacon |
+| `-` / `=` | sim speed 0.1x – 5x | | `2` | goal beacon |
 | `c` | camera follow-robot | | `p` | screenshot → `runs/screenshots/` |
 | `h` | hide/show HUD | | `Tab` / `F1` | native panel / native help |
 
-`teleop` drives with `w/s` (forward/back) and `a/d` (turn), tap-to-set ±0.25 per press.
+`teleop` drives with the **arrow keys** (`↑`/`↓` throttle, `←`/`→` turn, tap-to-set
+±0.25 per press, hold for auto-repeat).
+
+> **Why arrows and digit keys?** MuJoCo's built-in viewer binds *every* letter A–Z to a
+> visualization shortcut that fires alongside our key handler (e.g. `W` = wireframe,
+> `D` = hide static geometry) and can't be suppressed. RoboSim pins the recoverable
+> flags back every frame, and avoids the unrecoverable ones (`W S L G R`...) in its own
+> bindings. If you press a stray letter and the rendering changes, press it again to
+> undo — it's a MuJoCo native toggle, not a bug in the scene.
+
 `UI_CHECKLIST.md` is a 2-minute interactive walkthrough of all of the above.
 
 ### Scenes

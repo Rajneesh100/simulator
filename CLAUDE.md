@@ -176,4 +176,29 @@ observation from this same function so the real robot can emit an identical vect
   `runs/screenshots/` (offwidth/offheight raised in the theme). Creating a second GL
   context while the GUI runs worked in offscreen tests but is guarded try/except in the
   loops — worst case it prints a warning instead of killing the session.
+- **2026-07-12 — Teleop drives with ARROW KEYS, not WASD (deliberate deviation from
+  idea.md), and overlay keys avoid letters whose native effect is unrecoverable.**
+  User-reported bug: driving with WASD turned the scene into wireframe and hid the
+  stairs/floor. Root cause: MuJoCo's built-in viewer binds EVERY letter A-Z to a
+  visualization shortcut, and in passive mode those fire alongside our key_callback
+  with no way to suppress them (verified: `dir(mujoco._simulate.Simulate)` exposes no
+  scene/render-flag access, and `launch_passive` has no suppression option). W toggled
+  wireframe, S shadows, A autoconnect, D hid all static geometry — while driving.
+  Two-part fix: (1) native effects that live in `mjvOption` (shared with us) are pinned
+  back every frame in `overlay.apply_vis_flags` — static/texture/transparent/
+  autoconnect/convexhull/contactsplit flags plus geom/site group visibility; (2) native
+  effects in the internal render scene (wireframe W, shadow S, additive L, fog G,
+  reflection R) are unreachable, so nothing may be bound to those letters: driving
+  moved to arrow keys (bonus: auto-repeat = hold-to-drive), lidar moved l→'1', goal
+  g→'2' (digit keys only touch pinned geom groups). 'r' reset keeps a known cosmetic
+  quirk (native reflection toggle). Lesson: when embedding mujoco's viewer, treat the
+  letter keyspace as reserved; check a candidate key against mjVISSTRING/mjRNDSTRING
+  native shortcuts before binding it.
+- **2026-07-12 — HUD overlay strings must be pure ASCII.** mujoco's `mjr_overlay`
+  bitmap font has no glyphs beyond ASCII — the degree sign and omega we used rendered
+  as garbage boxes in the user's screenshot. All `set_texts` content is ASCII-only now
+  ("deg", "turn"), enforced by a test; fancy unicode stays in terminal prints only.
+- **2026-07-12 — Native simulate side panels start hidden** (`show_left_ui/right_ui=
+  False` on launch_passive; Tab/Shift+Tab restore them). Our HUD carries the info the
+  panels duplicated, and the cleaner viewport matches the Isaac reference.
 - (Further decisions get appended here as they're made — newest at the bottom.)

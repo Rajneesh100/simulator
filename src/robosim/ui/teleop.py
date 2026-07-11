@@ -1,11 +1,17 @@
-"""WASD keyboard driving in the viewer, with optional trajectory recording.
+"""Arrow-key driving in the viewer, with optional trajectory recording.
+
+Driving is on the ARROW KEYS (up/down = throttle, left/right = turn), not WASD as
+idea.md originally sketched: MuJoCo's built-in viewer binds every letter A-Z to a
+visualization shortcut that fires alongside our key callback and cannot be suppressed
+from the passive API — driving with WASD toggled wireframe (W), shadows (S), and hid
+all static geometry (D) while you drove. Arrow keys have no native render binding and
+auto-repeat when held, which suits driving better anyway. See CLAUDE.md decision log.
 
 MuJoCo's key_callback only reports key-press/repeat events (no key-up), so teleop is
-tap-to-set: W/S bump forward/back speed, A/D bump turn rate, space stops. The full
-Isaac-feel chrome from ui/overlay.py applies here too (HUD, follow-cam, debug overlays,
+tap-to-set: each press bumps the command by 0.25; space stops. The full Isaac-feel
+chrome from ui/overlay.py applies here too (HUD, follow-cam, debug overlays,
 screenshot); the top-right HUD box shows the live drive command and a REC counter when
-`--record` is on. Space is "stop", not "pause" — pausing mid-drive isn't useful and the
-key is muscle-memory for braking.
+`--record` is on. Space is "stop", not "pause" — it's muscle-memory for braking.
 """
 
 from __future__ import annotations
@@ -27,6 +33,9 @@ UI_FRAME_DT = 1.0 / 60.0
 MAX_SIM_CHUNK = 0.05
 HUD_PERIOD = 0.1
 
+# GLFW keycodes (arrows arrive as >255 codes, untouched by native letter shortcuts)
+KEY_RIGHT, KEY_LEFT, KEY_DOWN, KEY_UP = 262, 263, 264, 265
+
 
 class DriveState:
     def __init__(self):
@@ -34,26 +43,35 @@ class DriveState:
         self.omega = 0.0
 
 
+def handle_drive_key(drive: DriveState, keycode: int) -> bool:
+    """Arrow-key drive bindings; space stops. Returns True if consumed."""
+    if keycode == KEY_UP:
+        drive.v = min(1.0, drive.v + SPEED_STEP)
+    elif keycode == KEY_DOWN:
+        drive.v = max(-1.0, drive.v - SPEED_STEP)
+    elif keycode == KEY_LEFT:
+        drive.omega = min(1.0, drive.omega + SPEED_STEP)
+    elif keycode == KEY_RIGHT:
+        drive.omega = max(-1.0, drive.omega - SPEED_STEP)
+    elif keycode == ord(" "):
+        drive.v = 0.0
+        drive.omega = 0.0
+    else:
+        return False
+    return True
+
+
 def _make_key_callback(drive: DriveState, state: overlay.OverlayState, world):
     def key_callback(keycode):
+        if handle_drive_key(drive, keycode):
+            return
         char = chr(keycode).lower() if 0 < keycode < 256 else ""
-        if char == "w":
-            drive.v = min(1.0, drive.v + SPEED_STEP)
-        elif char == "s":
-            drive.v = max(-1.0, drive.v - SPEED_STEP)
-        elif char == "a":
-            drive.omega = min(1.0, drive.omega + SPEED_STEP)
-        elif char == "d":
-            drive.omega = max(-1.0, drive.omega - SPEED_STEP)
-        elif char == " ":
-            drive.v = 0.0
-            drive.omega = 0.0
-        elif char == "r":
+        if char == "r":
             world.reset()
             drive.v = 0.0
             drive.omega = 0.0
             state.trail.clear()
-        elif char != ".":  # no pause/step in teleop — space is the brake
+        elif char != ".":  # no pause/step in teleop — the sim runs while you drive
             overlay.handle_common_key(state, keycode, world=None)
 
     return key_callback
@@ -76,14 +94,18 @@ def run_teleop(
     record_enabled = record_path is not None
     prev_action = np.zeros(2, dtype=np.float32)
 
-    print("robosim teleop — w/s: fwd/back · a/d: turn · space: stop · r: reset")
-    print("keys: -/= speed · c follow · l lidar · x contacts · t trail · g goal · "
+    print("robosim teleop — arrows: up/down throttle, left/right turn · space: stop · r: reset")
+    print("keys: -/= speed · c follow · 1 lidar · x contacts · t trail · 2 goal · "
           "p screenshot · h hud", flush=True)
     if record_enabled:
         print(f"Recording trajectory to {Path(record_path).with_suffix('.npz')}", flush=True)
 
     with mujoco.viewer.launch_passive(
-        world.model, world.data, key_callback=_make_key_callback(drive, state, world)
+        world.model,
+        world.data,
+        key_callback=_make_key_callback(drive, state, world),
+        show_left_ui=False,
+        show_right_ui=False,
     ) as viewer:
         overlay.init_camera(viewer.cam, world.spawn_pos)
         last_wall = time.perf_counter()
@@ -157,8 +179,16 @@ def run_teleop(
                         (
                             overlay.FONT_HUD,
                             overlay.GRID.mjGRID_TOPRIGHT,
-                            "drive v\ndrive ω\nrecord",
+                            "throttle\nturn\nrecord",
                             f"{drive.v:+.2f}\n{drive.omega:+.2f}\n{rec_line}",
+                        )
+                    )
+                    texts.append(
+                        (
+                            overlay.FONT_HINTS,
+                            overlay.GRID.mjGRID_BOTTOM,
+                            "drive: up/down throttle   left/right turn   space stop   r reset",
+                            None,
                         )
                     )
                     texts.append(overlay.overlay_toggle_line(state))
