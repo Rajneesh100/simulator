@@ -35,15 +35,20 @@ uv run robosim train --task goal_reach --scene flat --steps 300000 --n-envs 8
 
 ## Known limitations / honest gaps
 
-- **No interactive display in this build environment.** `view`/`teleop`/`play` are
-  implemented against `mujoco.viewer`'s real API and unit-tested at the model/physics
-  layer (offscreen rendering, action→motion correctness), but nobody has actually looked
-  through the live orbit-camera GUI yet. Try `uv run robosim view --scene stairs` on your
-  machine to confirm the interactive pieces (mouse camera, keyboard toggles).
-- **BC training used a scripted stand-in, not a real teleop recording** (same reason —
-  no display to drive WASD interactively here). `train/bc.py`'s pipeline is verified
-  correct (see M5 evidence above); swap in real `teleop --record` output for genuine
-  human demonstrations.
+- **`view`/`teleop`/`play` were verified live, not just unit-tested.** `mujoco.viewer.
+  launch_passive` requires macOS processes to run under mujoco's own `mjpython`
+  launcher, not plain `python` — `cli.py` transparently re-execs into it
+  (`_ensure_mjpython()`) so `uv run robosim view ...` just works. Confirmed by actually
+  launching all three: `view` and `teleop` opened a real GUI window and ran the
+  physics/render loop at real CPU load (killed manually since they run until the window
+  is closed); `play` on the M4 checkpoint ran a full episode to completion with a live
+  HUD (reward -0.01 → +11.64, success=True) and exited cleanly on its own. What's *not*
+  verified is a human actually operating the mouse camera or WASD keys — that still
+  needs a person at the machine.
+- **BC training used a scripted stand-in, not a real teleop recording.** Driving WASD
+  interactively requires a human at the keyboard, which this session couldn't do itself.
+  `train/bc.py`'s pipeline is verified correct end-to-end (see M5 evidence above); swap
+  in real `teleop --record` output for genuine human demonstrations.
 - **`stair_climb` (T5) is expected to plateau, not succeed** — idea.md calls this out
   explicitly: a wheeled robot has no way to lift over a step riser. That's the intended
   finding, not a defect; it motivates a legged robot in a later phase.
@@ -60,7 +65,8 @@ uv run robosim train --task goal_reach --scene flat --steps 300000 --n-envs 8
 
 ## Next steps
 
-1. Run `robosim view`/`teleop`/`play` interactively to confirm the GUI layer.
+1. Sit down and actually drive `robosim teleop` with the mouse/keyboard — the process
+   launches and runs correctly, but no one has manually exercised camera orbit or WASD.
 2. Record a real teleop session and re-run `bc-train` on it instead of the scripted demo.
 3. Longer PPO runs on `obstacle_nav`/`corridor` to compare P1 vs P2 vs P3/P4 per idea.md's
    task-ladder table.

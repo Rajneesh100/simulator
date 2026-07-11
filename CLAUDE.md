@@ -131,4 +131,18 @@ observation from this same function so the real robot can emit an identical vect
   `.npz` files in the exact same format `teleop --record` writes, used to validate the
   BC pipeline end-to-end. It is a test fixture, not a replacement for real demonstrations
   — swap in actual `teleop --record` output for real BC training.
+- **2026-07-11 — `cli.py`'s `view`/`teleop`/`play` transparently re-exec under `mjpython`
+  on macOS.** `mujoco.viewer.launch_passive` raises `RuntimeError` unless the process was
+  launched via mujoco's own `mjpython` launcher (it dispatches the GUI to the main thread,
+  which plain `python`/`uv run` doesn't do). `_ensure_mjpython()` checks
+  `platform.system() == "Darwin"`, finds `mjpython` on PATH, and `os.execvp`s into
+  `mjpython -m robosim.cli <original argv>` (guarded by an env var against re-triggering
+  post-relaunch) — so `uv run robosim view ...` just works without the user needing to
+  know about mjpython. Verified live: `view`, `teleop`, and `play` all open a real GUI
+  window on this machine and run the physics/render loop at real CPU load; `play` on the
+  M4 checkpoint completed a full episode (reward -0.01 → +11.64, success) with a live HUD.
+- **2026-07-11 — HUD `print(..., end="\r")` needs `flush=True`.** Found while verifying
+  `play` live: Python block-buffers stdout when it's not a TTY (and even interactively,
+  `\r`-only lines don't trigger line-buffering's flush-on-`\n`), so the HUD never
+  actually appeared without an explicit flush. Fixed in `ui/view.py` and `train/play.py`.
 - (Further decisions get appended here as they're made — newest at the bottom.)

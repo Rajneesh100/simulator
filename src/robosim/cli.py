@@ -2,11 +2,32 @@
 
 from __future__ import annotations
 
+import os
+import platform
+import shutil
+import sys
+
 import typer
 
 from robosim.core.registry import list_robots, list_scenes, list_tasks
 
 app = typer.Typer(add_completion=False, help="RoboSim — minimal Isaac-Lab-style physics simulator.")
+
+_RELAUNCH_MARKER = "ROBOSIM_MJPYTHON_RELAUNCHED"
+
+
+def _ensure_mjpython() -> None:
+    """mujoco.viewer.launch_passive requires macOS scripts run under `mjpython` (its
+    own launcher that dispatches the GUI to the main thread) instead of plain `python`.
+    Transparently re-exec under it so `robosim view/teleop/play` just work regardless of
+    how the user invoked the CLI — this is what idea.md's CLI section promises."""
+    if platform.system() != "Darwin" or os.environ.get(_RELAUNCH_MARKER):
+        return
+    mjpython = shutil.which("mjpython")
+    if not mjpython:
+        return  # fall through; mujoco will raise its own clear error
+    os.environ[_RELAUNCH_MARKER] = "1"
+    os.execvp(mjpython, [mjpython, "-m", "robosim.cli", *sys.argv[1:]])
 
 
 @app.command()
@@ -17,6 +38,7 @@ def view(
     debug_lidar: bool = typer.Option(False, "--debug-lidar", help="Draw lidar rays"),
 ):
     """Watch the world: flat scene + robot renders in the interactive viewer."""
+    _ensure_mjpython()
     from robosim.ui.view import run_view
 
     run_view(scene, robot, speed=speed, debug_lidar=debug_lidar)
@@ -29,6 +51,7 @@ def teleop(
     record: str = typer.Option(None, help="Path (no extension) to record trajectory .npz to"),
 ):
     """Drive manually with WASD in the viewer, optionally recording the trajectory."""
+    _ensure_mjpython()
     from robosim.ui.teleop import run_teleop
 
     run_teleop(scene, robot, record_path=record)
@@ -100,6 +123,7 @@ def play(
     episodes: int = typer.Option(5, help="Number of episodes to play"),
 ):
     """Load a checkpoint and run the policy in the viewer."""
+    _ensure_mjpython()
     from robosim.train.play import run_play
 
     run_play(checkpoint, scene=scene, robot=robot, task=task, episodes=episodes)

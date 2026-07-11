@@ -58,6 +58,7 @@ def run_play(
                     f"ep={ep} t={env.world.data.time:6.2f}s reward={reward:+.3f} "
                     f"total={total_reward:+.2f} dist={info.get('distance_to_goal', float('nan')):.2f}",
                     end="\r",
+                    flush=True,
                 )
                 dt_left = env.world.model.opt.timestep * env._steps_per_action - (
                     time.time() - step_start

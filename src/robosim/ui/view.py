@@ -143,6 +143,7 @@ def run_view(
                     f"t={world.data.time:6.2f}s  pos=({pos[0]:+.2f},{pos[1]:+.2f})  "
                     f"vel={np.linalg.norm(lin_vel):.2f} m/s",
                     end="\r",
+                    flush=True,
                 )
                 last_hud = time.time()
 
