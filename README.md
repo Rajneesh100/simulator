@@ -136,3 +136,20 @@ int8 quantization, curriculum/domain-randomization/behavior-cloning pipelines en
 
 See `PROGRESS.md` for what's been verified against idea.md's milestones and acceptance
 criteria, plus known limitations.
+
+
+
+Try it 
+
+# look around / drive it yourself (arrow keys)
+uv run robosim view   --scene "racetrack:obstacles=6,opponents=2" --robot racecar
+uv run robosim teleop --scene "racetrack:obstacles=6,opponents=2" --robot racecar
+
+# train the driver (start ~500k steps; racing is harder than goal_reach)
+uv run robosim train --task race --scene "racetrack:obstacles=4,opponents=1" \
+  --robot racecar --steps 500000 --lidar-beams 48 --lidar-fov 360 --lidar-range 12 \
+  --max-episode-steps 900 --run-name race1
+
+# watch it race
+uv run robosim play --checkpoint runs/race1/best_model.zip \
+  --scene "racetrack:obstacles=4,opponents=1" --robot racecar --task race
