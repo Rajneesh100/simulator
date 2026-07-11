@@ -70,7 +70,8 @@ def run_view(
     lidar = Lidar()
     dt = world.model.opt.timestep
 
-    print("robosim view — mouse: orbit/pan/zoom · Tab: native panel · F1: native help")
+    print("robosim view — mouse: orbit/pan/zoom · Tab: left panel · "
+          "Shift+Tab: right panel (joints/controls) · F1: native help")
     print("keys: space pause · . step · r reset · -/= speed · c follow · "
           "1 lidar · x contacts · t trail · 2 goal · p screenshot · h hud", flush=True)
 

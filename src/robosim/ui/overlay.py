@@ -42,7 +42,7 @@ GRID = mujoco.mjtGridPos
 KEY_HINTS = (
     "space pause   .  step   r reset   -/=  speed",
     "c follow   1 lidar   x contacts   t trail   2 goal",
-    "p screenshot   h hud   tab panel   F1 native help",
+    "p screenshot   h hud   tab left panel   shift-tab right panel   F1 help",
 )
 
 

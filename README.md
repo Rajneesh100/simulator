@@ -48,7 +48,8 @@ Mouse orbits/pans/zooms (native). Keys, shared across all three modes:
 | `r` | reset robot to spawn | | `t` | trajectory trail |
 | `-` / `=` | sim speed 0.1x – 5x | | `2` | goal beacon |
 | `c` | camera follow-robot | | `p` | screenshot → `runs/screenshots/` |
-| `h` | hide/show HUD | | `Tab` / `F1` | native panel / native help |
+| `h` | hide/show HUD | | `Tab` / `Shift+Tab` | native left / right panel |
+| | | | `F1` | native help overlay |
 
 `teleop` drives with the **arrow keys** (`↑`/`↓` throttle, `←`/`→` turn, tap-to-set
 ±0.25 per press, hold for auto-repeat).
