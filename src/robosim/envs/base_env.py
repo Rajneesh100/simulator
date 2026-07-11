@@ -19,9 +19,9 @@ from gymnasium import spaces
 from robosim.core import physics
 from robosim.core.movers import derive_movers, update_movers
 from robosim.core.registry import get_task
-from robosim.core.world import build_world
+from robosim.core.world import _parse_scene_arg, build_world
 from robosim.envs.obs import build_obs, obs_dim
-from robosim.sensors.lidar import Lidar
+from robosim.sensors.lidar import Lidar, body_subtree_ids
 
 
 class DomainRandomization:
@@ -72,7 +72,9 @@ class RoboSimEnv(gym.Env):
         self.render_mode = render_mode
 
         self.world = build_world(scene, robot)
-        self.task = get_task(task)()
+        # tasks take params exactly like scenes/robots: --task race:laps=3
+        task_name, task_params = _parse_scene_arg(task)
+        self.task = get_task(task_name)(**task_params)
         self.lidar = Lidar(
             n_beams=n_lidar_beams, fov_deg=lidar_fov_deg, max_range=lidar_max_range
         )
@@ -93,6 +95,7 @@ class RoboSimEnv(gym.Env):
         """(Re)derive ids/arrays that depend on the compiled model — called on init and
         whenever set_scene() rebuilds self.world with a new scene (curriculum hook)."""
         self._chassis_id = self.world.model.body(self.world.root_body_name).id
+        self._robot_body_ids = body_subtree_ids(self.world.model, self._chassis_id)
         self._chassis_geom_ids = {
             self.world.model.geom(n).id for n in self.world.robot.collision_geom_names()
         }
@@ -155,7 +158,11 @@ class RoboSimEnv(gym.Env):
         """Lidar sense, cached into task_state so tasks (e.g. obstacle_nav's clearance
         shaping) can read the same ranges reward() needs without re-raycasting."""
         ranges = self.lidar.sense(
-            self.world.model, self.world.data, exclude_body_id=self._chassis_id, rng=self.np_random
+            self.world.model,
+            self.world.data,
+            exclude_body_id=self._chassis_id,
+            rng=self.np_random,
+            exclude_body_ids=self._robot_body_ids,
         )
         self._task_state["last_min_lidar"] = float(ranges.min())
         return ranges

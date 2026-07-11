@@ -36,9 +36,13 @@ def run_play(
     robot: str = "diffdrive",
     task: str = "goal_reach",
     episodes: int = 5,
+    max_episode_steps: int | None = None,
 ) -> None:
     model, is_recurrent = _load_model(checkpoint)
-    env = RoboSimEnv(scene=scene, robot=robot, task=task, **env_kwargs_from_run(checkpoint))
+    env_kwargs = env_kwargs_from_run(checkpoint)
+    if max_episode_steps is not None:  # e.g. endless demo laps: --task race:laps=0
+        env_kwargs["max_episode_steps"] = max_episode_steps
+    env = RoboSimEnv(scene=scene, robot=robot, task=task, **env_kwargs)
     world = env.world
     state = overlay.OverlayState()
     timer = overlay.HudTimer()
@@ -108,7 +112,8 @@ def run_play(
                             overlay.draw_goal(scn, goal)
                     if state.show_lidar:
                         origin, dirs, ranges_m = env.lidar.debug_rays(
-                            world.model, world.data, exclude_body_id=env._chassis_id
+                            world.model, world.data, exclude_body_id=env._chassis_id,
+                            exclude_body_ids=env._robot_body_ids,
                         )
                         overlay.draw_lidar(scn, origin, dirs, ranges_m, env.lidar.max_range)
 

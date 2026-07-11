@@ -160,10 +160,10 @@ class DiffDriveRobot(Robot):
     def proprio_dim(self) -> int:
         return 5  # wheel_left_vel, wheel_right_vel, pitch, roll, yaw_rate
 
-    def read_proprio(self, model, data) -> np.ndarray:
+    def read_proprio(self, model, data, prefix: str = "") -> np.ndarray:
         from robosim.sensors.proprio import read_proprio
 
-        return read_proprio(model, data, self)
+        return read_proprio(model, data, self, prefix=prefix)
 
     def collision_geom_names(self) -> list[str]:
         return ["chassis_geom"]

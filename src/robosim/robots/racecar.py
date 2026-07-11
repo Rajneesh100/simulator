@@ -218,10 +218,10 @@ class RaceCarRobot(Robot):
     def proprio_dim(self) -> int:
         return 5
 
-    def read_proprio(self, model, data) -> np.ndarray:
+    def read_proprio(self, model, data, prefix: str = "") -> np.ndarray:
         from robosim.sensors.proprio import read_proprio
 
-        proprio = read_proprio(model, data, self)
+        proprio = read_proprio(model, data, self, prefix=prefix)
         # wheel speeds reach ~50 rad/s at full throttle — normalize so the obs
         # stays in the same range every other robot produces
         max_wheel_speed = self.max_speed / self.wheel_radius

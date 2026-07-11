@@ -26,7 +26,7 @@ import numpy as np
 from robosim.core.movers import derive_movers, update_movers
 from robosim.core.world import build_world
 from robosim.envs.obs import build_obs
-from robosim.sensors.lidar import Lidar
+from robosim.sensors.lidar import Lidar, body_subtree_ids
 from robosim.ui import overlay
 
 SPEED_STEP = 0.25  # fraction of max, added/removed per keypress
@@ -90,6 +90,7 @@ def run_teleop(
     lidar = Lidar()
     movers = derive_movers(world.model, world.scene)
     chassis_id = world.model.body(world.root_body_name).id
+    robot_body_ids = body_subtree_ids(world.model, chassis_id)
     dt = world.model.opt.timestep
 
     recording: list[dict] = []
@@ -134,7 +135,10 @@ def run_teleop(
                 if record_enabled:
                     pos, quat = world.robot_pose()
                     proprio = world.robot.read_proprio(world.model, world.data)
-                    ranges = lidar.sense(world.model, world.data, exclude_body_id=chassis_id)
+                    ranges = lidar.sense(
+                        world.model, world.data, exclude_body_id=chassis_id,
+                        exclude_body_ids=robot_body_ids,
+                    )
                     goal = world.scene.task_info().get("goal", (0.0, 0.0))
                     obs = build_obs(ranges, pos[:2], quat, goal, proprio, prev_action)
                     recording.append({"obs": obs, "action": action.copy()})
@@ -156,7 +160,8 @@ def run_teleop(
                         overlay.draw_goal(scn, goal)
                 if state.show_lidar:
                     origin, dirs, ranges_m = lidar.debug_rays(
-                        world.model, world.data, exclude_body_id=chassis_id
+                        world.model, world.data, exclude_body_id=chassis_id,
+                        exclude_body_ids=robot_body_ids,
                     )
                     overlay.draw_lidar(scn, origin, dirs, ranges_m, lidar.max_range)
 

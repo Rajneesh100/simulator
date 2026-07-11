@@ -29,8 +29,9 @@ def quat_to_pitch_roll(quat_wxyz: np.ndarray) -> tuple[float, float]:
     return float(pitch), float(roll)
 
 
-def read_proprio(model, data, robot) -> np.ndarray:
-    names = robot.sensor_names()
+def read_proprio(model, data, robot, prefix: str = "") -> np.ndarray:
+    """`prefix` handles multi-robot worlds, where attach prefixes every sensor name."""
+    names = {k: prefix + v for k, v in robot.sensor_names().items()}
     wheel_left = _sensordata(model, data, names["wheel_left_vel"])[0]
     wheel_right = _sensordata(model, data, names["wheel_right_vel"])[0]
     quat = _sensordata(model, data, names["orientation"])

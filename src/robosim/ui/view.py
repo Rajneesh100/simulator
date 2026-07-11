@@ -49,9 +49,12 @@ def _update_user_scn(viewer, world: World, state: overlay.OverlayState, lidar) -
             overlay.draw_goal(scn, goal)
 
     if state.show_lidar and lidar is not None:
+        from robosim.sensors.lidar import body_subtree_ids
+
         chassis_id = world.model.body(world.root_body_name).id
         origin, dirs, ranges_m = lidar.debug_rays(
-            world.model, world.data, exclude_body_id=chassis_id
+            world.model, world.data, exclude_body_id=chassis_id,
+            exclude_body_ids=body_subtree_ids(world.model, chassis_id),
         )
         overlay.draw_lidar(scn, origin, dirs, ranges_m, lidar.max_range)
 

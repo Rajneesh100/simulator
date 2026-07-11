@@ -55,6 +55,14 @@ def _point_at(pts: np.ndarray, cum: np.ndarray, total: float, s: float) -> tuple
 
 @register_task("race")
 class RaceTask(Task):
+    """Params (via `--task race:laps=N`): laps — laps to finish for success (default 1);
+    laps=0 means endless: lap bonuses keep coming but the episode never lap-terminates
+    (it ends on crash or the env step cap) — the demo mode for continuous driving."""
+
+    def __init__(self, **params: str):
+        super().__init__(**params)
+        self.laps = int(params.get("laps", 1))
+
     def reset(self, world, rng: np.random.Generator) -> dict[str, Any]:
         info = dict(world.scene.task_info())
         pts = np.asarray(info["waypoints"], dtype=np.float64)
@@ -71,6 +79,7 @@ class RaceTask(Task):
                 "_cum": cum,
                 "s": s0,
                 "progress": 0.0,
+                "laps_done": 0,
                 "goal": _point_at(pts, cum, total, s0 + LOOKAHEAD_M),
             }
         )
@@ -106,8 +115,13 @@ class RaceTask(Task):
         if collided:
             reward -= COLLISION_PENALTY
             terminated = True
-        if task_state["progress"] >= total:
+
+        laps_now = int(task_state["progress"] // total)
+        if laps_now > task_state["laps_done"]:
+            task_state["laps_done"] = laps_now
             reward += LAP_BONUS
+        info["laps_done"] = task_state["laps_done"]
+        if self.laps > 0 and task_state["laps_done"] >= self.laps:
             terminated = True
             info["success"] = True
         return reward, terminated, info

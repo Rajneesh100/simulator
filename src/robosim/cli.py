@@ -127,14 +127,44 @@ def play(
     checkpoint: str = typer.Option(..., help="Path to a trained model .zip"),
     scene: str = typer.Option("flat", help="Scene name"),
     robot: str = typer.Option("diffdrive", help="Robot name"),
-    task: str = typer.Option("goal_reach", help="Task name"),
+    task: str = typer.Option("goal_reach", help="Task name, e.g. 'race:laps=0' for endless"),
     episodes: int = typer.Option(5, help="Number of episodes to play"),
+    max_steps: int = typer.Option(None, help="Override episode step cap (e.g. huge for endless laps)"),
 ):
     """Load a checkpoint and run the policy in the viewer."""
     _ensure_mjpython()
     from robosim.train.play import run_play
 
-    run_play(checkpoint, scene=scene, robot=robot, task=task, episodes=episodes)
+    run_play(
+        checkpoint, scene=scene, robot=robot, task=task, episodes=episodes,
+        max_episode_steps=max_steps,
+    )
+
+
+@app.command()
+def race(
+    checkpoint: str = typer.Option(..., help="Trained model .zip — the same brain drives every car"),
+    scene: str = typer.Option("racetrack:obstacles=0", help="Track scene (needs waypoints)"),
+    robot: str = typer.Option("racecar", help="Robot name"),
+    cars: int = typer.Option(4, help="Number of cars on the grid (colors: red, green, blue, ...)"),
+    laps: int = typer.Option(3, help="Laps to win the race"),
+    speed: float = typer.Option(1.0, help="Playback speed multiplier"),
+    deterministic: bool = typer.Option(
+        False, "--deterministic", help="Mean actions: every race is an identical replay"
+    ),
+    seed: int = typer.Option(None, help="Seed the stochastic race (reproducible variety)"),
+    variation: float = typer.Option(
+        0.5, help="Driver personality spread 0..1: per-car aggression/lookahead/jitter"
+    ),
+):
+    """Grid-start N copies of the same policy and race them to a winner."""
+    _ensure_mjpython()
+    from robosim.ui.race import run_race
+
+    run_race(
+        checkpoint, scene=scene, robot=robot, cars=cars, laps=laps, speed=speed,
+        deterministic=deterministic, seed=seed, variation=variation,
+    )
 
 
 @app.command()

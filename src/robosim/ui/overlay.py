@@ -275,14 +275,15 @@ def push_trail(state: OverlayState, pos) -> None:
     state.trail.append(p)
 
 
-def draw_trail(scn, trail) -> None:
+def draw_trail(scn, trail, rgba=None) -> None:
     pts = list(trail)
     # Subsample long trails: this runs every frame while holding the viewer lock, so
     # cap the connector count instead of drawing all 400 stored points.
     stride = max(1, -(-len(pts) // TRAIL_MAX_SEGMENTS))  # ceil division
     pts = pts[::stride]
+    color = RGBA_TRAIL if rgba is None else rgba
     for a, b in zip(pts, pts[1:]):
-        _add_line(scn, a, b, RGBA_TRAIL, 3.0)
+        _add_line(scn, a, b, color, 3.0)
 
 
 def draw_goal(scn, goal_xy, ground_z: float = 0.0) -> None:

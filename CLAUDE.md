@@ -240,4 +240,51 @@ observation from this same function so the real robot can emit an identical vect
   0.8 mm.** The racetrack road is drawn as overlapping non-colliding box segments along
   the centerline; coplanar overlaps rendered as bright striping. Alternating segment
   z by (i % 2) · 0.0008 is invisible at viewing distance and kills the artifact.
+- **2026-07-12 — Lidar self-hit fix: `bodyexclude` excludes ONE body, but a robot is a
+  body tree.** On the racecar with 360-degree FOV, 12 of 48 beams permanently read
+  0.11–0.40 m on an empty scene — side/rear rays hitting its own wheels/cabin (separate
+  bodies from the excluded chassis). `Lidar.sense` now takes `exclude_body_ids`
+  (`body_subtree_ids()` of the robot root); beams landing on a self body are re-cast
+  from just past the hit until they reach the world. All sense/debug_rays callers pass
+  the subtree. NOTE: checkpoints trained before this fix (e.g. race1) learned with
+  polluted side beams — retrain for best results.
+- **2026-07-12 — Tasks take CLI params exactly like scenes/robots: `--task race:laps=N`.**
+  `RoboSimEnv` now routes the task arg through `_parse_scene_arg`. Race uses it for lap
+  count: laps=N terminates with success after N laps; laps=0 is endless demo mode (lap
+  bonuses keep coming, episode ends only on crash or the step cap — `play` grew
+  `--max-steps` to raise that cap for continuous lapping).
+- **2026-07-12 — Racetrack layouts are just centerline generators; added `layout=gp`.**
+  Everything in the scene (walls, road strips, obstacles, opponent lanes, spawn, task
+  waypoints) derives from `self._center`, so the procedural grand-prix circuit is one
+  function: a radius-modulated circle (harmonics k=2..5, amplitudes damped 1/k so
+  curvature stays drivable at road width), resampled uniform-in-arclength.
+  `--scene racetrack:layout=gp,scale=12,seed=7` — scale is mean radius; each seed is a
+  different circuit.
+- **2026-07-12 — `robosim race`: N copies of ONE policy racing in ONE world
+  (`core/world.py build_multi_world` + `ui/race.py`).** Cars attach with prefixes
+  (`c0_`, `c1_`, ...) onto an F1-style grid (rows of two along the track behind the
+  start line); `MjSpec` excludes and all names survive prefixed attach. Each car gets
+  its own Lidar (prefixed site, subtree self-exclusion — cars DO see each other),
+  prefixed proprio (`read_proprio` grew a `prefix` param), and its own progress/lap
+  tracker reusing race-task helpers; actions come from ONE `model.predict` batch call.
+  Palette-tinted chassis (RED/GREEN/BLUE/YELLOW/WHITE/...), live leaderboard HUD,
+  follow-cam tracks the current leader, first to `--laps` wins, standings print at the
+  finish. Verified headless: 4 race1-driven cars, leaders lapping at ~3.2 m/s. Caveat:
+  solo-trained policies never saw other cars — early-race contact can strand cars
+  (training ends episodes on collision, so there's no recovery behavior). Multi-car
+  *training* (self-play in the env) is future work; race mode is currently a viewer.
+- **2026-07-12 — Race mode: identical deterministic brains from a fixed grid = the same
+  race every run, with side-by-side pairs wedging each other at turn one.** User-observed:
+  every restart replayed identically; paired grid slots stalled both partners (solo-trained
+  policies have no contact recovery — collision *ended* training episodes). Fixes, all
+  race-mode-level: (1) grid is now staggered single-file (one car per row, alternating
+  lanes); (2) actions are sampled stochastically by default (`--deterministic` restores
+  replay mode, `--seed` makes variety reproducible); (3) anti-stall: >1.5 s at ~zero speed
+  triggers a 0.9 s scripted reverse-and-turn ("rec" on the leaderboard); (4) per-car
+  DRIVER PERSONALITY (`--variation`, default 0.5): seeded offsets in throttle aggression
+  (x0.94–1.03), cornering lookahead (1.6–3.75 m), and action jitter — same checkpoint,
+  genuinely different racing lines and overtakes. Every car draws a tracer in its palette
+  color (`draw_trail` grew an rgba param; `push_trail` duck-types onto any object with a
+  `.trail`). Verified headless: 3 seeds → 3 different winners, incl. a 146.1 m vs 146.0 m
+  finish. Real fix remains multi-car training/self-play.
 - (Further decisions get appended here as they're made — newest at the bottom.)

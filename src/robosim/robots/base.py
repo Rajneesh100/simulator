@@ -51,7 +51,8 @@ class Robot(ABC):
     def proprio_dim(self) -> int:
         return 0
 
-    def read_proprio(self, model, data) -> np.ndarray:
+    def read_proprio(self, model, data, prefix: str = "") -> np.ndarray:
+        """`prefix` is the attach prefix in multi-robot worlds ("" in the normal case)."""
         return np.zeros(0, dtype=np.float32)
 
     def collision_geom_names(self) -> list[str]:

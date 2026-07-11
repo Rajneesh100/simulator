@@ -1,12 +1,19 @@
-"""Closed stadium racing circuit: two straights + two 180-degree turns, walled on both
-sides, with optional static obstacles on the road and scripted opponent cars lapping it.
+"""Closed racing circuit, walled on both sides, with optional static obstacles on the
+road and scripted opponent cars lapping it.
 
-`--scene racetrack:straight=5.0,radius=2.5,road_width=2.6,obstacles=6,opponents=2,seed=0`
+Two layouts:
+- `stadium` (default): two straights + two 180-degree turns.
+  `--scene racetrack:straight=5.0,radius=2.5,road_width=2.6,obstacles=6,opponents=2`
+- `gp`: procedural grand-prix circuit — a seeded smooth closed loop with sweeping
+  corners of varying radius, F1-style. `--scene racetrack:layout=gp,scale=9,seed=3`
+  (`scale` is the mean centerline radius in meters; bigger = longer lap).
 
 The centerline is a waypoint polyline (task_info()["waypoints"]) that the race task uses
-for progress/lap accounting and that opponent movers follow. Walls are physical (crashing
-into them is a collision); the road surface is a visual-only strip so "off the racing
-line" is judged by the task, not by contacts.
+for progress/lap accounting and that opponent movers follow. Everything — walls, road
+strips, obstacle placement, opponent lanes, spawn — derives from that one polyline, so a
+new layout is just a new centerline generator. Walls are physical (crashing into them is
+a collision); the road surface is a visual-only strip so "off the racing line" is judged
+by the task, not by contacts.
 """
 
 from __future__ import annotations
@@ -25,6 +32,35 @@ OPPONENT_RGBA = [
     [0.2, 0.8, 0.4, 1.0],
     [0.7, 0.2, 0.8, 1.0],
 ]
+
+
+def _gp_centerline(scale: float, seed: int, n: int) -> np.ndarray:
+    """Seeded smooth closed circuit: radius-modulated circle (low-frequency harmonics
+    only, amplitudes damped by 1/k so curvature stays drivable), resampled to n points
+    uniform in arclength. Different seeds give genuinely different F1-ish circuits."""
+    rng = np.random.default_rng(seed)
+    theta = np.linspace(0.0, 2 * np.pi, 2048, endpoint=False)
+    r = np.full_like(theta, scale)
+    for k in range(2, 6):
+        amp = scale * rng.uniform(0.05, 0.11) * (2.0 / k)
+        phase = rng.uniform(0, 2 * np.pi)
+        r += amp * np.cos(k * theta + phase)
+    dense = np.stack([r * np.cos(theta), r * np.sin(theta)], axis=1)
+
+    seg = np.diff(np.vstack([dense, dense[:1]]), axis=0)
+    seg_len = np.hypot(seg[:, 0], seg[:, 1])
+    cum = np.concatenate([[0.0], np.cumsum(seg_len)])
+    total = cum[-1]
+    targets = np.linspace(0.0, total, n, endpoint=False)
+    idx = np.searchsorted(cum, targets, side="right") - 1
+    frac = (targets - cum[idx]) / np.maximum(seg_len[idx], 1e-12)
+    nxt = (idx + 1) % len(dense)
+    return dense[idx] + frac[:, None] * (dense[nxt] - dense[idx])
+
+
+def _polyline_length(pts: np.ndarray) -> float:
+    seg = np.diff(np.vstack([pts, pts[:1]]), axis=0)
+    return float(np.hypot(seg[:, 0], seg[:, 1]).sum())
 
 
 def _stadium_centerline(straight: float, radius: float, n: int) -> np.ndarray:
@@ -78,11 +114,22 @@ class RacetrackScene(Scene):
         self.opponents = int(params.get("opponents", 0))
         self.opponent_speed = float(params.get("opponent_speed", 1.2))
         self.seed = int(params.get("seed", 0))
-        self.n_wp = int(params.get("n_wp", 96))
+        self.layout = params.get("layout", "stadium")
+        self.scale = float(params.get("scale", 9.0))
         self._movers: list[dict] = []
 
-        self._center = _stadium_centerline(self.straight, self.radius, self.n_wp)
-        self._track_length = 4 * self.straight + 2 * np.pi * self.radius
+        if self.layout == "gp":
+            # waypoint density scales with lap length so wall segments stay short
+            default_wp = max(96, int(2 * np.pi * self.scale * 1.3 / 0.6))
+            self.n_wp = int(params.get("n_wp", default_wp))
+            self._center = _gp_centerline(self.scale, self.seed, self.n_wp)
+            self._track_length = _polyline_length(self._center)
+        elif self.layout == "stadium":
+            self.n_wp = int(params.get("n_wp", 96))
+            self._center = _stadium_centerline(self.straight, self.radius, self.n_wp)
+            self._track_length = 4 * self.straight + 2 * np.pi * self.radius
+        else:
+            raise ValueError(f"unknown racetrack layout '{self.layout}' (stadium | gp)")
 
     def _offset_line(self, offset: float) -> np.ndarray:
         """Centerline shifted laterally by `offset` (positive = left of travel)."""
@@ -94,7 +141,7 @@ class RacetrackScene(Scene):
         return pts + offset * normals
 
     def build(self, spec) -> None:
-        extent = self.straight + self.radius + self.road_width + 2.0
+        extent = float(np.abs(self._center).max()) + self.road_width + 2.0
         spec.worldbody.add_geom(
             name="ground",
             type=mujoco.mjtGeom.mjGEOM_PLANE,

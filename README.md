@@ -88,6 +88,87 @@ uv run robosim train --curriculum "0:flat;50000:obstacles:count=3;150000:obstacl
 uv run robosim train --dr   # friction/mass/lidar-noise/lidar-dropout randomized per episode
 ```
 
+## The model — what's actually driving
+
+The default policy (`--policy p1`) is a PPO **actor-critic**: two small independent
+MLPs that share nothing but the input vector. It's deliberately tiny (~16k parameters,
+~64 KB as float32) — it has to run at 20 Hz on a Raspberry Pi 5 later, and for
+reactive driving from lidar, small is enough.
+
+### The input vector (observation)
+
+One flat float32 vector, built identically every control step (`envs/obs.py`):
+
+| Slice | Size | Meaning |
+|---|---|---|
+| lidar | `n_beams` | distances, normalized 0–1 (1 = nothing within max range) |
+| goal | 3 | distance to goal ÷ 10 m, sin(bearing), cos(bearing) — robot frame |
+| wheel velocities | 2 | left/right wheel speed (normalized on `racecar`) |
+| IMU | 3 | pitch, roll, yaw-rate |
+| previous action | 2 | what the net commanded last step |
+
+Size = `n_beams + 10`. The diffdrive default (16 beams) → **26**; the racecar's race
+config (48 beams) → **58**. For the race task, "goal" is repointed every step to a spot
+2.5 m ahead on the track centerline, so it doubles as "where the road goes".
+
+### Layer-by-layer (race1 checkpoint: 58-dim obs, 2-dim action)
+
+```
+                       observation (58)
+                      /                \
+            ACTOR ("what to do")     CRITIC ("how good is this state")
+        ┌───────────────────────┐  ┌───────────────────────┐
+        │ Linear 58 → 64   tanh │  │ Linear 58 → 64   tanh │   (3,776 + 3,776 weights)
+        │ Linear 64 → 64   tanh │  │ Linear 64 → 64   tanh │   (4,160 + 4,160)
+        │ Linear 64 → 2  (mean) │  │ Linear 64 → 1  (value)│   (130 + 65)
+        └───────────┬───────────┘  └───────────────────────┘
+                    │ + log_std (2 learned params, state-independent)
+                    ▼
+        action = (throttle, steer) ∈ [-1, 1]²
+```
+
+| Component | Layer | Neurons | Params (w + b) |
+|---|---|---|---|
+| actor | hidden 1 | 64, tanh | 58·64 + 64 = 3,776 |
+| actor | hidden 2 | 64, tanh | 64·64 + 64 = 4,160 |
+| actor | action head | 2, linear | 64·2 + 2 = 130 |
+| actor | log_std | 2 (free params) | 2 |
+| critic | hidden 1 | 64, tanh | 58·64 + 64 = 3,776 |
+| critic | hidden 2 | 64, tanh | 64·64 + 64 = 4,160 |
+| critic | value head | 1, linear | 64·1 + 1 = 65 |
+| **total** | | | **16,069** |
+
+During **training**, the actor's output is the *mean* of a Gaussian; PPO samples around
+it (spread = `exp(log_std)`) to explore, and the critic's value estimate is used to
+compute advantages. During **play/race** (`deterministic=True`) the mean is used
+directly and the critic is dead weight — only the ~8k-param actor actually drives.
+
+The action then goes through the robot's `action_to_ctrl()` (pure math, not learned):
+diffdrive maps `(v, ω)` to two wheel speeds; racecar maps `(throttle, steer)` to
+Ackermann steering angles + differential rear-wheel speeds. The whole loop:
+
+```
+ lidar rays ─┐
+ IMU        ─┼→ obs vector → actor MLP → (throttle, steer) → action_to_ctrl()
+ encoders   ─┤     ↑ 20 Hz                                        │
+ prev action┘                                                     ▼
+             MuJoCo physics @ 500 Hz  ←  4 actuator targets (velocity/position servos)
+```
+
+### The other architectures (`--policy p2/p3/p4`)
+
+| | Idea | Shape |
+|---|---|---|
+| `p2` | 1D-CNN over the lidar slice (learns spatial patterns like "gap between obstacles") | Conv1d 1→8 (k=5) → Conv1d 8→16 (k=3) → pool → 32 features, + 16-unit MLP for the rest → concat 48 → one 64 hidden layer |
+| `p3` | LSTM memory (remembers what it saw around the corner) | 64-unit LSTM + 64 hidden, via RecurrentPPO |
+| `p4` | frame stacking (cheap short-term memory) | same MLP as p1 but input = last 4 obs concatenated (4× input size) |
+
+Inspect any checkpoint's exact layers yourself:
+
+```bash
+uv run python -c "from stable_baselines3 import PPO; print(PPO.load('runs/race1/best_model.zip', device='cpu').policy)"
+```
+
 ## Architecture
 
 ```
