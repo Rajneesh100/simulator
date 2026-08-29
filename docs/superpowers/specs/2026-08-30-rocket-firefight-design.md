@@ -55,6 +55,22 @@ gym dependency, so the env and the viewer share one implementation.
   `solve_intercept(shooter_pos, shooter_vel, target_pos, target_vel, speed, g)` is unit-
   tested by simulating the rocket and checking it lands on the moving target.
 
+## Perception: how a car acquires targets (`--combat-sensor los`, default)
+
+No physics oracle. `combat/perception.py::Perception` models eyes + mirrors:
+- A rival is **visible** only if within `view_range` (default = lidar max range, 12 m)
+  and one `mj_ray` from the observer's eye point (0.25 m above chassis center) to the
+  rival's chassis center reaches that rival first — walls, hill crests, and other cars
+  occlude. 360°.
+- **Velocity is estimated**: difference of the last two sightings over elapsed time.
+  First sighting → 0; losing sight resets the estimate.
+- Rockets in flight are visible under the same range + line-of-sight rule.
+- Learner and scripted gunners look through the same `Perception`.
+- `--combat-sensor oracle` returns physics truth (debugging / ablation). Both the mode
+  and `view_range` are recorded in `config.yaml` and recovered by `race`.
+- Lidar-only acquisition was rejected: 48 beams over 360° = 7.5° spacing; a 0.45 m car
+  at 10 m spans 2.5° and falls between beams, and lidar carries no velocity.
+
 ## Policy interface (only when firearms enabled)
 
 **Action** `Box(-1, 1, (5,))`: `[throttle, steer, fire, az, el]`.

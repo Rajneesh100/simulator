@@ -392,6 +392,18 @@ uv run robosim race --checkpoint runs/rally6/best_model.zip --checkpoint runs/ra
   --robot racecar:max_speed=12,max_torque=1.2 --cars 6 --laps 5 --firearms rocket
 ```
 
+**How cars see each other** (`--combat-sensor`, default `los`): no physics oracle. A
+rival enters the combat block only if it is within `--view-range` (default = lidar range,
+12 m) AND a line of sight from the observer's eye point reaches it — walls, hill crests
+and cars in between hide it (360 deg: front, sides, mirrors). Its velocity is not read
+from the engine: the observer differences its last two sightings ("two glances"), so a
+first sighting has velocity 0 and a rival reappearing from behind a wall restarts the
+estimate. Rockets in flight are seen the same way (exhaust visible, not through walls).
+Scripted gunners look through the same eyes, so nobody shoots through a wall and their
+intercept solutions inherit the estimation error. `--combat-sensor oracle` is the
+physics-truth ablation for debugging. The 48-beam lidar stays for driving; it cannot
+resolve a car past ~3 m (7.5 deg between beams), which is why sight is modeled as eyes.
+
 Reward in versus+firearms: +15 per kill, -20 and episode over when destroyed (own blast
 included), -0.3 per shot, on top of the usual progress/overtake/takedown/win terms.
 `firearms`/`rocket_speed` are recorded in the run's config.yaml and recovered by

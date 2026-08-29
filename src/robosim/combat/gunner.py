@@ -69,26 +69,34 @@ class ScriptedGunner:
         self.sigma = np.deg2rad(sigma_deg)
         self.rng = rng if rng is not None else np.random.default_rng()
 
-    def decide(self, system: RocketSystem, data, shooter: int) -> tuple[float, float] | None:
+    def decide(self, system: RocketSystem, data, shooter: int, perception=None,
+               model=None, now: float = 0.0) -> tuple[float, float] | None:
+        """Pick a target and return (az_rel, el), or None. With `perception` (a
+        `combat.perception.Perception`, needs `model` and the sim time `now`) the gunner
+        only knows rivals it can SEE and their estimated velocities; without it, it reads
+        the physics state (oracle)."""
         if not system.ready(shooter):
             return None
         sp = system.car_pos(data, shooter) + np.array([0.0, 0.0, LAUNCH_HEIGHT])
         sv = system.car_vel(data, shooter)
         yaw = system.car_yaw(data, shooter)
         my_pos = system.car_pos(data, shooter)
+        if perception is not None:
+            rivals = perception.rivals(model, data, shooter, now)
+        else:
+            rivals = [
+                (i, system.car_pos(data, i), system.car_vel(data, i))
+                for i in range(system.n_cars) if i != shooter and not system.is_dead(i)
+            ]
         candidates = []
-        for i in range(system.n_cars):
-            if i == shooter or system.is_dead(i):
-                continue
-            tp = system.car_pos(data, i)
+        for i, tp, tv in rivals:
             dist = float(np.linalg.norm(tp - sp))
             if dist <= self.gun_range:
-                candidates.append((dist, i, tp))
+                candidates.append((dist, i, tp, tv))
         candidates.sort(key=lambda c: c[0])
         # nearest viable target: skip rivals with no ballistic solution and rivals so
         # close the blast would take the shooter out too
-        for _, i, tp in candidates:
-            tv = system.car_vel(data, i)
+        for _, i, tp, tv in candidates:
             sol = solve_intercept(sp, sv, tp, tv, system.rocket_speed, system.gravity)
             if sol is None:
                 continue

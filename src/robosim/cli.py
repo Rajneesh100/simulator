@@ -96,6 +96,11 @@ def train(
     rocket_speed: float = typer.Option(
         40.0, help="Rocket muzzle speed m/s (range = v^2 sin(2 el) / g)"
     ),
+    combat_sensor: str = typer.Option(
+        "los", help="How cars see rivals: los (line of sight + range, velocities "
+        "estimated from two glances) | oracle (physics truth, debugging only)"
+    ),
+    view_range: float = typer.Option(0.0, help="Sight range m (0 = lidar range)"),
 ):
     """Train a policy headless with SB3 PPO/SAC."""
     from robosim.envs.base_env import DomainRandomization
@@ -133,6 +138,8 @@ def train(
         versus_opponents=versus_opponents,
         firearms=firearms,
         rocket_speed=rocket_speed,
+        combat_sensor=combat_sensor,
+        view_range=view_range,
     )
 
 
@@ -183,6 +190,10 @@ def race(
         "none", help="none | rocket — arm every car; weaponless checkpoints get a scripted gunner"
     ),
     rocket_speed: float = typer.Option(40.0, help="Rocket muzzle speed m/s (sets range)"),
+    combat_sensor: str = typer.Option(
+        "los", help="Scripted gunners' sight: los (line of sight + range) | oracle"
+    ),
+    view_range: float = typer.Option(0.0, help="Sight range m (0 = lidar range)"),
 ):
     """Grid-start N copies of the same policy and race them to a winner."""
     _ensure_mjpython()
@@ -193,6 +204,7 @@ def race(
         deterministic=deterministic, seed=seed, variation=variation,
         lookahead=lookahead, lookahead_time=lookahead_time,
         firearms=firearms, rocket_speed=rocket_speed,
+        combat_sensor=combat_sensor, view_range=view_range,
     )
 
 

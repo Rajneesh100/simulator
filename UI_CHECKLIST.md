@@ -51,7 +51,8 @@ rendering changes, press the same key again to undo — that's MuJoCo, not a sce
 
 ## 4. `uv run robosim race --checkpoint runs/rally5/best_model.zip --scene "racetrack:layout=gp,scale=18,seed=11,obstacles=0,road_width=3.5" --robot racecar:max_speed=12,max_torque=1.2 --cars 5 --laps 5 --variation 0.8 --firearms rocket` (~45s)
 
-- [ ] Terminal prints `firearms: rocket at 40 m/s -- 0 policy gunners, 5 scripted`.
+- [ ] Terminal prints `firearms: rocket at 40 m/s -- 0 policy gunners, 5 scripted;
+      sight: los, 12 m`. Cars do NOT fire at rivals behind a wall or over a crest.
 - [ ] Colored capsules with fading exhaust puffs fly real arcs (slight drop over
       distance); a short aim line shows on each car while it reloads.
 - [ ] Impact: orange fireball swells and fades over ~0.5 s with a ring on the ground

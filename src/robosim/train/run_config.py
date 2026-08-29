@@ -13,7 +13,8 @@ from pathlib import Path
 import yaml
 
 _ENV_KEYS = ("n_lidar_beams", "lidar_fov_deg", "lidar_max_range", "max_episode_steps",
-             "firearms", "rocket_speed")
+             "firearms", "rocket_speed", "combat_sensor", "view_range")
+_FIREARMS_KEYS = ("firearms", "rocket_speed", "combat_sensor", "view_range")
 
 
 def _load_config(checkpoint: str) -> dict:
@@ -29,8 +30,8 @@ def env_kwargs_from_run(checkpoint: str) -> dict:
     config = _load_config(checkpoint)
     kwargs = {k: config[k] for k in _ENV_KEYS if config.get(k) is not None}
     if kwargs.get("firearms") in (None, "none"):  # weaponless runs: plain env kwargs
-        kwargs.pop("firearms", None)
-        kwargs.pop("rocket_speed", None)
+        for k in _FIREARMS_KEYS:
+            kwargs.pop(k, None)
     if kwargs:
         print(f"[run-config] env settings for {checkpoint}: {kwargs}")
     return kwargs

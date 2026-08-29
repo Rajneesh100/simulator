@@ -63,6 +63,8 @@ class RoboSimEnv(gym.Env):
         domain_randomization: DomainRandomization | None = None,
         firearms: str = "none",
         rocket_speed: float = 40.0,
+        combat_sensor: str = "los",
+        view_range: float = 0.0,
         render_mode: str | None = None,
     ):
         super().__init__()

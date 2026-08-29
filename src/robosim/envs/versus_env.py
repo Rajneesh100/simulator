@@ -42,6 +42,7 @@ from gymnasium import spaces
 from robosim.core import physics
 from robosim.core.movers import derive_movers, update_movers
 from robosim.combat.gunner import ScriptedGunner
+from robosim.combat.perception import Perception
 from robosim.combat.rockets import RocketSystem, action_to_aim
 from robosim.core.world import _parse_scene_arg, build_multi_world
 from robosim.envs.obs import build_obs, combat_block, obs_dim
@@ -137,6 +138,8 @@ class VersusRaceEnv(gym.Env):
         domain_randomization=None,  # accepted for train.py symmetry; not applied
         firearms: str = "none",
         rocket_speed: float = 40.0,
+        combat_sensor: str = "los",
+        view_range: float = 0.0,  # 0 -> lidar_max_range
         render_mode: str | None = None,
     ):
         super().__init__()
@@ -193,6 +196,9 @@ class VersusRaceEnv(gym.Env):
         self.learner.prev_action = np.zeros(action_dim, dtype=np.float32)
 
         self.rockets: RocketSystem | None = None
+        self.perception: Perception | None = None
+        self.combat_sensor = combat_sensor
+        self.view_range = float(view_range) if view_range > 0 else float(lidar_max_range)
         self._gunners: list[ScriptedGunner | None] = [None] * len(self.cars)
         if firearms == "rocket":
             self.rockets = RocketSystem(
@@ -201,6 +207,10 @@ class VersusRaceEnv(gym.Env):
                 [c.body_ids for c in self.cars],
                 list(self.world.qvel_adrs),
                 rocket_speed=self.rocket_speed,
+            )
+            # everyone — learner and scripted gunners — looks through the same eyes
+            self.perception = Perception(
+                self.world.model, self.rockets, self.view_range, combat_sensor
             )
             for c in self.cars[1:]:
                 self._gunners[c.index] = ScriptedGunner(OPP_GUN_RANGE, OPP_AIM_SIGMA_DEG)
@@ -244,11 +254,12 @@ class VersusRaceEnv(gym.Env):
         combat = None
         if self.rockets is not None:
             me_vel = self.world.car_velocity(car.index)[:2]
+            now = self.world.data.time
             others = [
-                (self.world.car_pose(c.index)[0][:2], self.world.car_velocity(c.index)[:2])
-                for c in self.cars if c is not car and not self.rockets.is_dead(c.index)
+                (p[:2], v[:2])
+                for _, p, v in self.perception.rivals(self.world.model, self.world.data, car.index, now)
             ]
-            rockets = [(r.pos, r.vel) for r in self.rockets.rockets if r.owner != car.index]
+            rockets = self.perception.rockets(self.world.model, self.world.data, car.index)
             combat = combat_block(
                 pos[:2], quat, me_vel, others, self.rockets.ready(car.index), rockets
             )
@@ -316,6 +327,7 @@ class VersusRaceEnv(gym.Env):
         self.world.reset()
         if self.rockets is not None:
             self.rockets.reset()
+            self.perception.reset()
             self.rockets.rng = rng
             for g in self._gunners:
                 if g is not None:
@@ -419,7 +431,11 @@ class VersusRaceEnv(gym.Env):
             for car in self.cars[1:]:
                 g = self._gunners[car.index]
                 if g is not None and not self.rockets.is_dead(car.index):
-                    aim = g.decide(self.rockets, self.world.data, car.index)
+                    aim = g.decide(
+                        self.rockets, self.world.data, car.index,
+                        perception=self.perception, model=self.world.model,
+                        now=self.world.data.time,
+                    )
                     if aim is not None:
                         self.rockets.fire(self.world.data, car.index, *aim)
             # destroyed cars coast: no drive

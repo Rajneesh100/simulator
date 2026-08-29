@@ -430,4 +430,18 @@ observation from this same function so the real robot can emit an identical vect
   opponents keep their own obs layout (`VersusRaceEnv._opp_obs`) — a brain must see
   the obs it trained on. Test gotcha: `mj_ray` treats a plane's `size` as finite
   half-extents, so a rocket landing beyond the flat scene's 10 m ground never "hits".
+- **2026-08-30 — Target acquisition is line-of-sight "eyes", not the physics state and
+  not lidar (`combat/perception.py`, `--combat-sensor los`).** User objection to v1:
+  reading rival positions/velocities from `data` let a car "see" through walls and hill
+  crests — a driver can't. Lidar-only was rejected on physics: 48 beams over 360 deg is
+  7.5 deg spacing, a 0.45 m car spans 2.5 deg at 10 m and falls between beams, so
+  lidar can't acquire past ~3 m and gives no velocity. `Perception` = range limit (lidar
+  range by default) + one `mj_ray` eye->chassis per rival (occlusion by walls, terrain,
+  other cars) + velocity ESTIMATED by differencing the last two sightings (first glance
+  = 0, re-sighting restarts). Rockets visible under the same rule. Learner and scripted
+  gunners share one `Perception` per mode so nobody shoots through walls; `oracle`
+  remains as an ablation. Recorded in config.yaml (`combat_sensor`, `view_range`) and
+  recovered by race so a brain always sees the way it trained. Gotcha: obs and gunner
+  both call `rivals()` in the same control step — the second call at the same sim time
+  must return the cached estimate, not dt=0 -> velocity 0.
 - (Further decisions get appended here as they're made — newest at the bottom.)

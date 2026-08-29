@@ -107,6 +107,8 @@ def run_train(
     versus_opponents: int = 2,
     firearms: str = "none",
     rocket_speed: float = 40.0,
+    combat_sensor: str = "los",
+    view_range: float = 0.0,
 ) -> Path:
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -128,6 +130,8 @@ def run_train(
         max_episode_steps=max_episode_steps,
         firearms=firearms,
         rocket_speed=rocket_speed,
+        combat_sensor=combat_sensor,
+        view_range=view_range,
     )
     env_cls = RoboSimEnv
     if firearms != "none" and not versus_checkpoint:
@@ -144,7 +148,8 @@ def run_train(
               f"from {versus_checkpoint}")
         if firearms != "none":
             print(f"[train] FIREARMS: {firearms} at {rocket_speed} m/s — "
-                  "opponents use the scripted gunner")
+                  f"opponents use the scripted gunner; sight = {combat_sensor}"
+                  f"{f' {view_range} m' if view_range > 0 else ' (lidar range)'}")
     vec_cls = SubprocVecEnv if n_envs > 1 else DummyVecEnv
     try:
         vec_env = make_vec_env(
@@ -257,6 +262,8 @@ def run_train(
         "versus_opponents": versus_opponents if versus_checkpoint else None,
         "firearms": firearms,
         "rocket_speed": rocket_speed,
+        "combat_sensor": combat_sensor,
+        "view_range": view_range,
         "domain_randomization": domain_randomization.to_dict() if domain_randomization else None,
         "bc_init": bc_init,
         "curriculum": curriculum,

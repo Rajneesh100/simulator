@@ -44,6 +44,7 @@ import mujoco.viewer
 import numpy as np
 
 from robosim.combat.gunner import ScriptedGunner
+from robosim.combat.perception import Perception
 from robosim.combat.rockets import RocketSystem, action_to_aim
 from robosim.core import physics
 from robosim.core.movers import derive_movers, update_movers
@@ -92,6 +93,7 @@ class _CarState:
         self.rgb = rgb
         self.armed = False  # this car's checkpoint trained with firearms (5-dim action)
         self.gunner: ScriptedGunner | None = None
+        self.eyes: Perception | None = None  # how THIS car sees rivals (los | oracle)
         self.model_idx = 0
         self.tag = ""  # run name of the model driving this car (multi-model duels)
         self.label = self.name  # display name; gains ":tag" in duels
@@ -182,6 +184,8 @@ def run_race(
     lookahead_time: float = 0.0,
     firearms: str = "none",
     rocket_speed: float = 40.0,
+    combat_sensor: str = "los",
+    view_range: float = 0.0,
 ) -> None:
     from robosim.train.play import _load_model
 
@@ -200,9 +204,12 @@ def run_race(
     # per-model sensing + lookahead, each from its OWN run config (CLI values are the
     # fallback for runs that didn't record them) — a brain must see the obs it trained on
     lidar_kwargs_per_model, la_base, la_time, armed_per_model = [], [], [], []
+    sensor_per_model, view_per_model = [], []
     for c in checkpoints:
         env_kwargs = env_kwargs_from_run(c)
         armed_per_model.append(env_kwargs.get("firearms") == "rocket")
+        sensor_per_model.append(env_kwargs.get("combat_sensor", combat_sensor))
+        view_per_model.append(float(env_kwargs.get("view_range", 0.0) or 0.0))
         lidar_kwargs_per_model.append(dict(
             n_beams=env_kwargs.get("n_lidar_beams", 16),
             fov_deg=env_kwargs.get("lidar_fov_deg", 270.0),
@@ -269,13 +276,31 @@ def run_race(
             world.model, [c.chassis_id for c in car_states], [c.body_ids for c in car_states],
             list(world.qvel_adrs), rocket_speed=rocket_speed, rng=rng,
         )
+        # eyes: an armed brain sees the way it trained (recorded in its run config);
+        # scripted gunners see the way the race flag says. One Perception per mode.
+        eyes_by_mode: dict[str, Perception] = {}
+
+        def eyes_for(mode: str, rng_m: float) -> Perception:
+            if mode not in eyes_by_mode:
+                vr = view_range if view_range > 0 else (rng_m or max(
+                    k["max_range"] for k in lidar_kwargs_per_model))
+                eyes_by_mode[mode] = Perception(world.model, rockets, vr, mode)
+            return eyes_by_mode[mode]
+
         for car in car_states:
-            if not car.armed:  # weaponless brain: the scripted gunner pulls the trigger
+            m = car.model_idx
+            if car.armed:
+                car.eyes = eyes_for(sensor_per_model[m], view_per_model[m])
+            else:  # weaponless brain: the scripted gunner pulls the trigger
                 car.gunner = ScriptedGunner(
                     gun_range=20.0, sigma_deg=2.0 + 6.0 * v * rng.uniform(), rng=rng)
+                car.eyes = eyes_for(combat_sensor, 0.0)
+        modes = sorted({c.eyes.mode for c in car_states})
         print(f"  firearms: rocket at {rocket_speed:g} m/s -- "
               f"{sum(c.armed for c in car_states)} policy gunners, "
-              f"{sum(c.gunner is not None for c in car_states)} scripted", flush=True)
+              f"{sum(c.gunner is not None for c in car_states)} scripted; "
+              f"sight: {'/'.join(modes)}, "
+              f"{max(e.view_range for e in eyes_by_mode.values()):g} m", flush=True)
 
     state = overlay.OverlayState(speed=max(0.1, min(5.0, speed)))
     timer = overlay.HudTimer()
@@ -338,6 +363,8 @@ def run_race(
             _tint_car(world, car.index, car.rgb)
         if rockets is not None:
             rockets.reset()
+            for car in car_states:
+                car.eyes.reset()
         lstm_states = [None] * n_models
         episode_starts = [np.ones(len(g), dtype=bool) for g in group_indices]
         winner = None
@@ -393,13 +420,12 @@ def run_race(
                     goal = _point_at(pts, cum, total, car.s + la)
                     combat = None
                     if rockets is not None and car.armed:
+                        now = world.data.time
                         others = [
-                            (world.car_pose(o.index)[0][:2], world.car_velocity(o.index)[:2])
-                            for o in car_states
-                            if o is not car and not rockets.is_dead(o.index)
+                            (p[:2], v_[:2]) for _, p, v_ in
+                            car.eyes.rivals(world.model, world.data, car.index, now)
                         ]
-                        in_flight = [(r.pos, r.vel) for r in rockets.rockets
-                                     if r.owner != car.index]
+                        in_flight = car.eyes.rockets(world.model, world.data, car.index)
                         combat = combat_block(
                             pos[:2], quat, world.car_velocity(car.index)[:2],
                             others, rockets.ready(car.index), in_flight,
@@ -447,7 +473,10 @@ def run_race(
                                 az, el = action_to_aim(action[3], action[4])
                                 rockets.fire(world.data, car.index, az, el)
                         elif car.gunner is not None:
-                            aim = car.gunner.decide(rockets, world.data, car.index)
+                            aim = car.gunner.decide(
+                                rockets, world.data, car.index, perception=car.eyes,
+                                model=world.model, now=world.data.time,
+                            )
                             if aim is not None:
                                 rockets.fire(world.data, car.index, *aim)
                     if car.armed:

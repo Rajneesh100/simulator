@@ -457,3 +457,127 @@ def test_race_module_exposes_firearms_option():
     params = inspect.signature(run_race).parameters
     assert params["firearms"].default == "none"
     assert params["rocket_speed"].default == 40.0
+
+
+# ---------------------------------------------------------------------------
+# perception: line of sight, range, estimated velocity
+
+
+def _perception(world, system, **kw):
+    from robosim.combat.perception import Perception
+
+    return Perception(world.model, system, **kw)
+
+
+def _track_geometry(world):
+    info = world.scene.task_info()
+    pts3 = np.asarray(info["waypoints"], dtype=np.float64)
+    pts = pts3[:, :2]
+    seg = np.hypot(*(np.roll(pts, -1, axis=0) - pts).T)
+    cum = np.concatenate([[0.0], np.cumsum(seg)])[:-1]
+    return pts, cum, float(info["track_length"])
+
+
+def _park_world(world, i, s):
+    from robosim.envs.tasks.race import _point_at
+
+    pts, cum, total = _track_geometry(world)
+    p0 = np.array(_point_at(pts, cum, total, s))
+    p1 = np.array(_point_at(pts, cum, total, s + 0.5))
+    _place(world, i, p0, float(np.arctan2(*(p1 - p0)[::-1])))
+
+
+def test_perception_sees_open_rival_not_one_behind_wall():
+    """Stadium track: a rival on the same straight is visible; one on the opposite
+    straight is hidden by the two walls in between."""
+    world = _make_world(3, scene="racetrack:obstacles=0,straight=14")
+    system = _rocket_system(world)
+    per = _perception(world, system, view_range=30.0)
+    _, _, total = _track_geometry(world)
+    _park_world(world, 0, 1.0)
+    _park_world(world, 1, 9.0)  # same straight, 8 m ahead: open view
+    _park_world(world, 2, total / 2 + 1.0)  # opposite straight: walls in between
+    seen = {i for i, _, _ in per.rivals(world.model, world.data, 0, now=0.0)}
+    assert seen == {1}
+    oracle = _perception(world, system, view_range=30.0, mode="oracle")
+    assert {i for i, _, _ in oracle.rivals(world.model, world.data, 0, now=0.0)} == {1, 2}
+
+
+def test_perception_range_limit_and_velocity_estimate():
+    world = _make_world(2, scene="flat")
+    system = _rocket_system(world)
+    per = _perception(world, system, view_range=10.0)
+    _place(world, 0, (0.0, 0.0), 0.0)
+    _place(world, 1, (12.0, 0.0), 0.0)
+    assert per.rivals(world.model, world.data, 0, now=0.0) == []  # beyond view range
+    _place(world, 1, (6.0, 0.0), 0.0)
+    first = per.rivals(world.model, world.data, 0, now=0.0)
+    assert len(first) == 1 and np.allclose(first[0][2], 0.0)  # first glance: no velocity
+    _place(world, 1, (6.0, 0.4), 0.0)  # moved 0.4 m sideways in 0.05 s
+    second = per.rivals(world.model, world.data, 0, now=0.05)
+    assert np.allclose(second[0][2][:2], [0.0, 8.0], atol=1e-6)
+    _place(world, 1, (20.0, 0.0), 0.0)  # lost sight resets the estimate
+    assert per.rivals(world.model, world.data, 0, now=0.10) == []
+    _place(world, 1, (5.0, 0.0), 0.0)
+    again = per.rivals(world.model, world.data, 0, now=0.15)
+    assert np.allclose(again[0][2], 0.0)
+
+
+def test_perception_rockets_need_line_of_sight():
+    world = _make_world(2, scene="flat")
+    system = _rocket_system(world)
+    per = _perception(world, system, view_range=15.0)
+    _place(world, 0, (0.0, 0.0), 0.0)
+    _place(world, 1, (10.0, 0.0), np.pi)  # facing me
+    system.fire(world.data, 1, az=0.0, el=0.0)
+    _fly(world, system, 0.01)
+    assert len(per.rockets(world.model, world.data, 0)) == 1
+    assert per.rockets(world.model, world.data, 1) == []  # not your own
+    system.rockets[0].pos = np.array([50.0, 0.0, 0.3])  # 50 m away: out of sight
+    assert per.rockets(world.model, world.data, 0) == []
+
+
+def test_gunner_does_not_fire_at_rival_behind_wall():
+    from robosim.combat.gunner import ScriptedGunner
+
+    world = _make_world(2, scene="racetrack:obstacles=0,straight=14")
+    system = _rocket_system(world)
+    per = _perception(world, system, view_range=30.0)
+    _, _, total = _track_geometry(world)
+    _park_world(world, 0, 1.0)
+    _park_world(world, 1, total / 2 + 1.0)
+    gunner = ScriptedGunner(gun_range=30.0, sigma_deg=0.0, rng=np.random.default_rng(0))
+    assert gunner.decide(system, world.data, 0, perception=per, model=world.model, now=0.0) is None
+    oracle = _perception(world, system, view_range=30.0, mode="oracle")
+    assert gunner.decide(system, world.data, 0, perception=oracle, model=world.model, now=0.0) is not None
+
+
+def test_versus_env_uses_line_of_sight_by_default():
+    env = _versus_env(opponents=1)
+    assert env.perception is not None and env.perception.mode == "los"
+    assert env.perception.view_range == 12.0  # defaults to the lidar range
+    env.reset(seed=0)
+    _park_on_straight(env, [(0, 2.0), (1, env._total / 2 + 2.0)])  # rival across the walls
+    obs = env._obs_for(env.learner)
+    assert np.allclose(obs[-16:-4], 0.0)  # no rival in the combat block
+    oracle = _versus_env(opponents=1, combat_sensor="oracle", view_range=50.0)
+    oracle.reset(seed=0)
+    _park_on_straight(oracle, [(0, 2.0), (1, oracle._total / 2 + 2.0)])
+    obs = oracle._obs_for(oracle.learner)
+    assert obs[-16] > 0.0  # oracle lists it anyway
+
+
+def test_run_config_recovers_combat_sensor(tmp_path):
+    import yaml
+
+    from robosim.train.run_config import env_kwargs_from_run
+
+    run = tmp_path / "rally6"
+    run.mkdir()
+    (run / "config.yaml").write_text(yaml.safe_dump({
+        "firearms": "rocket", "combat_sensor": "los", "view_range": 0.0}))
+    (run / "best_model.zip").write_bytes(b"")
+    kw = env_kwargs_from_run(str(run / "best_model.zip"))
+    assert kw["combat_sensor"] == "los" and kw["view_range"] == 0.0
+    (run / "config.yaml").write_text(yaml.safe_dump({"firearms": "none", "combat_sensor": "los"}))
+    assert "combat_sensor" not in env_kwargs_from_run(str(run / "best_model.zip"))
