@@ -55,17 +55,45 @@ def _point_at(pts: np.ndarray, cum: np.ndarray, total: float, s: float) -> tuple
 
 @register_task("race")
 class RaceTask(Task):
-    """Params (via `--task race:laps=N`): laps — laps to finish for success (default 1);
-    laps=0 means endless: lap bonuses keep coming but the episode never lap-terminates
-    (it ends on crash or the env step cap) — the demo mode for continuous driving."""
+    """Params (via `--task race:laps=N,lookahead=4,lookahead_time=0.6`):
+    - laps: laps to finish for success (default 1); 0 = endless (lap bonuses keep
+      coming, episode ends only on crash or the step cap) — the continuous-demo mode.
+    - lookahead: meters ahead on the centerline for the obs goal point (default 2.5).
+    - lookahead_time: seconds; if > 0 the goal moves to max(lookahead, speed x this),
+      so a fast car sees further ahead — the standard fix for braking too late into
+      hairpins. Changes the obs distribution: train and play with the same values.
+    - random_heading: probability (0..1) that an episode starts facing a RANDOM
+      direction. Solo training otherwise never visits "pointing the wrong way" states,
+      so policies can't course-correct after a spin; a third of episodes starting
+      disoriented teaches the U-turn."""
 
     def __init__(self, **params: str):
         super().__init__(**params)
         self.laps = int(params.get("laps", 1))
+        self.lookahead = float(params.get("lookahead", LOOKAHEAD_M))
+        self.lookahead_time = float(params.get("lookahead_time", 0.0))
+        self.random_heading = float(params.get("random_heading", 0.0))
+
+    def _lookahead_m(self, world) -> float:
+        if self.lookahead_time <= 0:
+            return self.lookahead
+        adr = world.root_joint_qvel_adr
+        speed = float(np.hypot(world.data.qvel[adr], world.data.qvel[adr + 1]))
+        return max(self.lookahead, speed * self.lookahead_time)
 
     def reset(self, world, rng: np.random.Generator) -> dict[str, Any]:
+        if self.random_heading > 0 and rng.random() < self.random_heading:
+            import mujoco
+
+            yaw = world.spawn_yaw + rng.uniform(-np.pi, np.pi)
+            half = yaw / 2.0
+            adr = world.root_joint_qpos_adr
+            world.data.qpos[adr + 3 : adr + 7] = [np.cos(half), 0.0, 0.0, np.sin(half)]
+            mujoco.mj_forward(world.model, world.data)
+
         info = dict(world.scene.task_info())
-        pts = np.asarray(info["waypoints"], dtype=np.float64)
+        # waypoints may be (x, y) or (x, y, z); progress/lap math is in the xy plane
+        pts = np.asarray(info["waypoints"], dtype=np.float64)[:, :2]
         nxt = np.roll(pts, -1, axis=0)
         seg_len = np.hypot(*(nxt - pts).T)
         cum = np.concatenate([[0.0], np.cumsum(seg_len)])[:-1]
@@ -80,7 +108,7 @@ class RaceTask(Task):
                 "s": s0,
                 "progress": 0.0,
                 "laps_done": 0,
-                "goal": _point_at(pts, cum, total, s0 + LOOKAHEAD_M),
+                "goal": _point_at(pts, cum, total, s0 + self._lookahead_m(world)),
             }
         )
         return info
@@ -100,7 +128,7 @@ class RaceTask(Task):
         ds = float(np.clip(ds, -MAX_DS_PER_STEP, MAX_DS_PER_STEP))
         task_state["s"] = s
         task_state["progress"] += ds
-        task_state["goal"] = _point_at(pts, cum, total, s + LOOKAHEAD_M)
+        task_state["goal"] = _point_at(pts, cum, total, s + self._lookahead_m(world))
 
         reward = ds - TIME_PENALTY - CENTER_PENALTY * min(lateral / half_width, 1.5)
         terminated = False

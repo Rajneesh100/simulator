@@ -86,6 +86,12 @@ def train(
     lidar_fov: float = typer.Option(270.0, help="Lidar field of view in degrees"),
     lidar_range: float = typer.Option(5.0, help="Lidar max range in meters"),
     max_episode_steps: int = typer.Option(500, help="Control steps per episode (20 Hz)"),
+    versus: str = typer.Option(
+        None,
+        help="COMPETITIVE training: checkpoint whose frozen policy drives opponent cars; "
+        "reward adds overtakes, takedowns, and win/lose (racetrack scenes only)",
+    ),
+    versus_opponents: int = typer.Option(2, help="Opponent cars in versus mode"),
 ):
     """Train a policy headless with SB3 PPO/SAC."""
     from robosim.envs.base_env import DomainRandomization
@@ -119,6 +125,8 @@ def train(
         lidar_fov_deg=lidar_fov,
         lidar_max_range=lidar_range,
         max_episode_steps=max_episode_steps,
+        versus_checkpoint=versus,
+        versus_opponents=versus_opponents,
     )
 
 
@@ -143,7 +151,12 @@ def play(
 
 @app.command()
 def race(
-    checkpoint: str = typer.Option(..., help="Trained model .zip — the same brain drives every car"),
+    checkpoint: list[str] = typer.Option(
+        ...,
+        help="Trained model .zip. Repeat the flag to duel models (e.g. "
+        "--checkpoint runs/rally1/best_model.zip --checkpoint runs/rally3/best_model.zip); "
+        "cars are assigned to models round-robin.",
+    ),
     scene: str = typer.Option("racetrack:obstacles=0", help="Track scene (needs waypoints)"),
     robot: str = typer.Option("racecar", help="Robot name"),
     cars: int = typer.Option(4, help="Number of cars on the grid (colors: red, green, blue, ...)"),
@@ -156,6 +169,10 @@ def race(
     variation: float = typer.Option(
         0.5, help="Driver personality spread 0..1: per-car aggression/lookahead/jitter"
     ),
+    lookahead: float = typer.Option(2.5, help="Base goal lookahead (m) — match training"),
+    lookahead_time: float = typer.Option(
+        0.0, help="Speed-scaled lookahead horizon (s) — match training's lookahead_time"
+    ),
 ):
     """Grid-start N copies of the same policy and race them to a winner."""
     _ensure_mjpython()
@@ -164,6 +181,7 @@ def race(
     run_race(
         checkpoint, scene=scene, robot=robot, cars=cars, laps=laps, speed=speed,
         deterministic=deterministic, seed=seed, variation=variation,
+        lookahead=lookahead, lookahead_time=lookahead_time,
     )
 
 

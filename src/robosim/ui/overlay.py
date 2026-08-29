@@ -257,15 +257,35 @@ def _add_sphere(scn, pos, rgba, radius) -> None:
     scn.ngeom += 1
 
 
-def draw_lidar(scn, origin, dirs, ranges_m, max_range: float) -> None:
-    """Rays from the sensor origin: red to hit point when the beam hits something,
+def draw_lidar(scn, origin, dirs, ranges_m, max_range: float, rgba_hit=None) -> None:
+    """Rays from the sensor origin: colored to the hit point when the beam hits
+    something (default red; pass rgba_hit to tint, e.g. per-car in race mode),
     faint gray full-length when it doesn't."""
+    hit_color = RGBA_LIDAR_HIT if rgba_hit is None else rgba_hit
     for d, r in zip(dirs, ranges_m):
         hit = r < max_range - 1e-6
         end = origin + d * r
-        _add_line(scn, origin, end, RGBA_LIDAR_HIT if hit else RGBA_LIDAR_MISS, 2.0)
+        _add_line(scn, origin, end, hit_color if hit else RGBA_LIDAR_MISS, 2.0)
         if hit:
-            _add_sphere(scn, end, RGBA_LIDAR_HIT, 0.012)
+            _add_sphere(scn, end, hit_color, 0.012)
+
+
+def draw_label(scn, pos, text: str, rgba) -> None:
+    """Floating name tag: a small colored marker whose mjvGeom label renders as text
+    next to it (ASCII only — the overlay font has no other glyphs)."""
+    if scn.ngeom >= scn.maxgeom:
+        return
+    g = scn.geoms[scn.ngeom]
+    mujoco.mjv_initGeom(
+        g,
+        type=mujoco.mjtGeom.mjGEOM_SPHERE,
+        size=np.array([0.02, 0.02, 0.02]),
+        pos=np.asarray(pos, dtype=np.float64),
+        mat=_EYE3,
+        rgba=np.asarray(rgba, dtype=np.float32),
+    )
+    g.label = text
+    scn.ngeom += 1
 
 
 def push_trail(state: OverlayState, pos) -> None:

@@ -43,6 +43,14 @@ class Scene(ABC):
         geom name; override if a scene names its ground/terrain geom differently."""
         return ["ground", "terrain"]
 
+    def collision_exempt_geom_names(self) -> list[str]:
+        """Geoms whose contact with the robot does NOT count as a collision for
+        reward/termination. Defaults to the ground geoms; scenes with a physical
+        driving surface (e.g. racetrack hills' road slabs) add it here — scraping
+        the road is driving, not crashing. Kept separate from ground_geom_names()
+        because that list also drives ground *theming*."""
+        return self.ground_geom_names()
+
     def moving_bodies(self) -> list[dict[str, Any]]:
         """Optional: scripted moving-body specs for tasks like T7 moving_obstacle.
 

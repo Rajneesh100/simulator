@@ -117,7 +117,7 @@ def test_lidar_no_self_hits_at_360_fov():
 def test_gp_layout_builds_closed_circuit():
     world = build_world("racetrack:layout=gp,scale=9,seed=3,obstacles=0", "racecar")
     info = world.scene.task_info()
-    pts = np.asarray(info["waypoints"])
+    pts = np.asarray(info["waypoints"])[:, :2]
     assert info["track_length"] > 2 * np.pi * 7  # meaningfully bigger than a small circle
     # closed loop: consecutive gaps (incl. wraparound) all small and uniform-ish
     gaps = np.hypot(*(np.roll(pts, -1, axis=0) - pts).T)
@@ -183,6 +183,84 @@ def test_multi_world_grid():
         mujoco.mj_step(world.model, world.data)
     for i in range(4):
         assert np.hypot(*(world.car_pose(i)[0][:2] - before[i])) > 0.3
+
+
+def test_hilly_track_drivable():
+    import mujoco
+
+    world = build_world("racetrack:layout=gp,scale=9,seed=3,hills=0.8,obstacles=0", "racecar")
+    info = world.scene.task_info()
+    zs = np.asarray(info["waypoints"])[:, 2]
+    assert zs.max() - zs.min() > 0.4  # real elevation change
+    assert zs.min() > -1e-9  # nothing sinks below the ground plane
+    # grade cap respected
+    pts = np.asarray(info["waypoints"])[:, :2]
+    seg = np.hypot(*(np.roll(pts, -1, axis=0) - pts).T)
+    grades = np.abs(np.diff(np.concatenate([zs, zs[:1]]))) / seg
+    assert grades.max() < 0.13
+    # drive up the first stretch: car must gain ground, not fall through the road
+    env = RoboSimEnv(scene="racetrack:layout=gp,scale=9,seed=3,hills=0.8,obstacles=0",
+                     robot="racecar", task="race", max_episode_steps=200)
+    env.reset(seed=0)
+    info_step = {}
+    for _ in range(80):  # 4 s of full throttle
+        _, _, terminated, truncated, info_step = env.step(np.array([1.0, 0.0], dtype=np.float32))
+        if terminated or truncated:
+            break
+    pos, _ = env.world.robot_pose()
+    assert info_step["progress_m"] > 3.0
+    assert pos[2] > -0.5  # never fell through the world
+
+
+def test_racecar_max_speed_param():
+    fast = get_robot("racecar")(max_speed="6.0")
+    slow = get_robot("racecar")()
+    a = np.array([1.0, 0.0])
+    assert fast.action_to_ctrl(a)["rear_left_motor"] == 2 * slow.action_to_ctrl(a)["rear_left_motor"]
+    # ctrl range scales with the requested top speed so the command isn't clipped
+    spec = fast.build_spec()
+    model_ok = spec.compile() is not None
+    assert model_ok
+
+
+def test_task_params_recovered_from_run_config(tmp_path):
+    from robosim.train.run_config import task_params_from_run
+
+    (tmp_path / "config.yaml").write_text("task: race:laps=2,lookahead=4.0,lookahead_time=0.6\n")
+    params = task_params_from_run(str(tmp_path / "best_model.zip"))
+    assert params == {"laps": "2", "lookahead": "4.0", "lookahead_time": "0.6"}
+    # runs trained with a bare task name have no params
+    (tmp_path / "config.yaml").write_text("task: race\n")
+    assert task_params_from_run(str(tmp_path / "best_model.zip")) == {}
+
+
+def test_versus_env_smoke():
+    import pytest
+
+    pytest.importorskip("stable_baselines3")
+    from robosim.envs.versus_env import VersusRaceEnv
+
+    env = VersusRaceEnv(
+        scene="racetrack:obstacles=0", robot="racecar",
+        task="race:laps=2,lookahead=2.5",
+        opponent_checkpoint="runs/rally3/best_model.zip", opponents=2,
+        n_lidar_beams=48, lidar_fov_deg=360.0, lidar_max_range=12.0,
+        max_episode_steps=100,
+    )
+    obs, _ = env.reset(seed=0)
+    assert obs.shape == (48 + 10,)
+    opp_before = [env.world.car_pose(i)[0][:2].copy() for i in (1, 2)]
+    total_reward = 0.0
+    for _ in range(40):  # 2 s: learner floors it, opponents race their frozen policy
+        obs, r, term, trunc, info = env.step(np.array([1.0, 0.0], dtype=np.float32))
+        total_reward += r
+        if term or trunc:
+            break
+    assert "rank" in info and 1 <= info["rank"] <= 3
+    moved = [np.hypot(*(env.world.car_pose(i)[0][:2] - opp_before[k]))
+             for k, i in enumerate((1, 2))]
+    assert all(m > 0.5 for m in moved)  # frozen opponents actually drive
+    assert np.isfinite(total_reward)
 
 
 def test_axis_movers_still_work():

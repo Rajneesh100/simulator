@@ -220,17 +220,153 @@ criteria, plus known limitations.
 
 
 
-Try it 
+## Racing
 
+```bash
 # look around / drive it yourself (arrow keys)
 uv run robosim view   --scene "racetrack:obstacles=6,opponents=2" --robot racecar
 uv run robosim teleop --scene "racetrack:obstacles=6,opponents=2" --robot racecar
 
-# train the driver (start ~500k steps; racing is harder than goal_reach)
-uv run robosim train --task race --scene "racetrack:obstacles=4,opponents=1" \
-  --robot racecar --steps 500000 --lidar-beams 48 --lidar-fov 360 --lidar-range 12 \
-  --max-episode-steps 900 --run-name race1
+# F1-style procedural circuit with hills (every seed = a different track;
+# hills=H meters of elevation — the road becomes a real pitched surface)
+uv run robosim view --scene "racetrack:layout=gp,scale=12,seed=7,hills=1.2" --robot racecar
 
-# watch it race
-uv run robosim play --checkpoint runs/race1/best_model.zip \
-  --scene "racetrack:obstacles=4,opponents=1" --robot racecar --task race
+# train the driver (start ~500k steps; racing is harder than goal_reach).
+# racecar:max_speed=6 makes the car grip-limited: flat-out cornering physically
+# fails, so the policy has to LEARN braking points — real racing behavior.
+uv run robosim train --task race \
+  --scene "racetrack:layout=gp,scale=12,seed=7,hills=1.2,obstacles=4" \
+  --robot racecar:max_speed=6 --steps 800000 \
+  --lidar-beams 48 --lidar-fov 360 --lidar-range 12 \
+  --max-episode-steps 1200 --run-name race_gp
+
+# watch it lap forever (laps=0 = endless; needs the same --robot it trained with)
+uv run robosim play --checkpoint runs/race_gp/best_model.zip \
+  --scene "racetrack:layout=gp,scale=12,seed=7,hills=1.2,obstacles=4" \
+  --robot racecar:max_speed=6 --task race:laps=0 --max-steps 100000 --episodes 1
+
+# THE RACE: N colored cars (RED/GREEN/BLUE/YELLOW/WHITE/...), all driven by the
+# same checkpoint, grid start, live leaderboard, first to --laps wins.
+# --variation gives each car a driver personality (aggression/lookahead/jitter);
+# stochastic by default so every race is different (--seed for reproducible,
+# --deterministic for exact replays). Flipped cars get marshaled back upright.
+uv run robosim race --checkpoint runs/race_gp/best_model.zip \
+  --scene "racetrack:layout=gp,scale=12,seed=7,hills=1.2" \
+  --robot racecar:max_speed=6 --cars 5 --laps 20
+```
+
+Racetrack params: `layout` (stadium | gp), `scale` (gp mean radius, m), `seed`,
+`hills` (elevation amplitude in METERS — bounded by `max_grade` x lap length; if the
+request doesn't fit, it prints what it built), `max_grade` (default 0.12, rally ~0.3),
+`hill_freq` (harmonics; 3 = smooth GP, 8 = rally bumps), `straight`/`radius` (stadium),
+`road_width`, `obstacles`, `opponents`, `opponent_speed`. Tracks come dressed: red/white
+kerb walls, dashed centerline, checkered start/finish line.
+
+### Rally training recipes (the lineage, in order of results)
+
+All on the same rally track — bumpy, steep, jumpy. Train and race with the same
+`--robot` string, always.
+
+```bash
+# rally1 — the baseline that works: plain MLP, 1M steps, straight onto the hills.
+uv run robosim train --task race \
+  --scene "racetrack:layout=gp,scale=25,seed=11,hills=6,max_grade=0.3,hill_freq=8,road_width=3.5" \
+  --robot racecar:max_speed=12,max_torque=1.2 --steps 1000000 \
+  --lidar-beams 48 --lidar-fov 360 --lidar-range 12 \
+  --max-episode-steps 1500 --run-name rally1
+
+# rally2 (NEGATIVE result, kept for the record): p3 LSTM + curriculum lost badly to
+# rally1 — RecurrentPPO was unstable at this budget, and curriculum broke best_model
+# selection (see CLAUDE.md decision log). Don't repeat without more steps.
+
+# rally3 — the current champion: same recipe as rally1, DOUBLE the budget.
+# First checkpoint to lap the rally crash-free (~22 s laps, zero marshal rescues).
+uv run robosim train --task race \
+  --scene "racetrack:layout=gp,scale=25,seed=11,hills=6,max_grade=0.3,hill_freq=8,road_width=3.5" \
+  --robot racecar:max_speed=12,max_torque=1.2 --steps 2000000 \
+  --lidar-beams 48 --lidar-fov 360 --lidar-range 12 \
+  --max-episode-steps 1500 --run-name rally3
+
+# rally4 — rally3 + the course-correction fixes: speed-scaled lookahead (sees hairpins
+# earlier -> earlier braking) and random_heading (30% of episodes start facing a random
+# direction, teaching it to U-turn back onto the track after a spin).
+uv run robosim train --task "race:lookahead=2.5,lookahead_time=0.6,random_heading=0.3" \
+  --scene "racetrack:layout=gp,scale=25,seed=11,hills=6,max_grade=0.3,hill_freq=8,road_width=3.5" \
+  --robot racecar:max_speed=12,max_torque=1.2 --steps 2000000 \
+  --lidar-beams 48 --lidar-fov 360 --lidar-range 12 \
+  --max-episode-steps 1500 --run-name rally4
+
+# race any of them (task lookahead params are auto-recovered from the run config):
+uv run robosim race --checkpoint runs/rally3/best_model.zip \
+  --scene "racetrack:layout=gp,scale=25,seed=11,hills=6,max_grade=0.3,hill_freq=8,road_width=3.5" \
+  --robot racecar:max_speed=12,max_torque=1.2 --cars 5 --laps 10
+```
+
+Lessons encoded above (details in CLAUDE.md's decision log): scale the recipe that
+works before trying a cleverer architecture; with curriculum runs never trust
+best_model.zip (pick from checkpoints/ via `robosim evaluate`); lookahead params
+change what the net sees, so they live in the task string and are recorded in the
+run config.
+
+### Competitive training — train to WIN, not just to lap
+
+`--versus <checkpoint>` switches training to league mode: the learner races opponent
+cars driven by a FROZEN champion, and the reward pays for racecraft — track progress,
+signed overtake bonuses (losing places hurts), Burnout-style TAKEDOWNS (+8 when a rival
+wrecks within 1.5 s of contact with you), and win/lose bonuses for finishing first
+to `laps`. Car-to-car contact is free; walls still end your race — so blocking and
+smashing must be aimed. The learner starts from a shuffled grid slot every episode
+(sometimes ahead, sometimes buried in traffic). Output is a normal checkpoint that
+plugs straight into `robosim race` duels.
+
+```bash
+# rally5 — racecraft school. Opponents = frozen rally3 (the fastest clean racer =
+# hardest rivals). Warm start = rally4's weights: it has the traffic-relevant skills
+# (contact recovery, wrong-way U-turns from random_heading training) AND it trained
+# with the same speed-scaled lookahead this task string uses, so the obs semantics
+# match exactly. (Versus physics is ~7x slower than solo: 3 cars + opponent
+# inference; the warm start is what makes 1M steps enough.)
+uv run robosim train --task "race:laps=2,lookahead=2.5,lookahead_time=0.6" \
+  --scene "racetrack:layout=gp,scale=25,seed=11,hills=6,max_grade=0.3,hill_freq=8,road_width=3.5" \
+  --robot racecar:max_speed=12,max_torque=1.2 --steps 1000000 --n-envs 8 \
+  --lidar-beams 48 --lidar-fov 360 --lidar-range 12 --max-episode-steps 1500 \
+  --versus runs/rally3/best_model.zip --versus-opponents 2 \
+  --bc-init runs/rally4/policy_init.pt --run-name rally5
+
+# then the grudge match: the killer vs its own teacher
+uv run robosim race \
+  --checkpoint runs/rally5/best_model.zip --checkpoint runs/rally3/best_model.zip \
+  --scene "racetrack:layout=gp,scale=25,seed=11,hills=6,max_grade=0.3,hill_freq=8,road_width=3.5" \
+  --robot racecar:max_speed=12,max_torque=1.2 --cars 6 --laps 10 --variation 0.2
+```
+
+(`runs/rally4/policy_init.pt` is that run's raw policy weights — regenerate with
+`PPO.load(...).policy.state_dict()` -> `torch.save` after any retrain. Head-to-head
+context: rally3 out-paces rally4 in clean solo racing (450 m vs 385 m per race-minute)
+but rally4 carries the recovery skills that matter in traffic — hence opponent=rally3,
+warm-start=rally4. For a stronger league, repeat: train rally6 versus frozen rally5,
+and so on.)
+
+MODEL DUELS — repeat `--checkpoint` to pit different trained models against each other
+(cars assigned round-robin; roof tags and the leaderboard show `COLOR:runname`; each
+model automatically gets the lidar/lookahead settings it trained with):
+
+```bash
+uv run robosim race \
+  --checkpoint runs/rally1/best_model.zip --checkpoint runs/rally3/best_model.zip \
+  --scene "racetrack:layout=gp,scale=25,seed=11,hills=6,max_grade=0.3,hill_freq=8,road_width=3.5" \
+  --robot racecar:max_speed=12,max_torque=1.2 --cars 6 --laps 10 --variation 0.2
+```
+
+Speed ceiling: ~15 m/s on this car scale (already ~30 body-lengths/s, a scale ~350 km/h).
+Beyond that, cars cross more than a wall thickness per 2 ms physics step and contacts
+tunnel — for faster racing scale the whole track up instead.
+
+Racecar params: `max_speed` (m/s), `max_steer` (rad), `max_torque` (N·m per driven
+wheel). The motors are velocity servos: with the default 2.5 N·m they have ~7x the
+force any legal grade exerts, so they hold max_speed both up- AND downhill (gravity
+is simulated, the motor cancels it — like an EV on cruise control with regen).
+Lower it (`racecar:max_speed=6,max_torque=0.6`) and gravity becomes part of the
+race: climbs sap speed, steep descents push the car PAST max_speed (measured:
+commanded 3 m/s, 15-degree slope, 0.5 N·m -> 10.5 m/s). Train and race with the
+SAME robot params — the checkpoint learns the car it was given.

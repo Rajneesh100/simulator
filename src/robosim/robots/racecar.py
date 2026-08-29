@@ -23,6 +23,11 @@ WHEELBASE_HALF = 0.15  # front/rear axle x offset from chassis center
 TRACK_HALF_WIDTH = 0.13
 MAX_SPEED = 3.0  # m/s — a racecar, not a household robot
 MAX_STEER = 0.55  # rad (~31 deg)
+MAX_TORQUE = 2.5  # N·m per driven wheel — the motor's authority. With the default the
+# velocity servo has ~7x the force any legal grade exerts, so it masks gravity entirely
+# (holds max_speed up- AND downhill, like an EV on cruise control with regen). Lower it
+# (e.g. racecar:max_torque=0.5) and hills become real: climbs sap speed, and descents
+# steeper than the servo's braking authority push the car PAST max_speed.
 
 
 @register_robot("racecar")
@@ -32,6 +37,7 @@ class RaceCarRobot(Robot):
         self.wheel_radius = float(params.get("wheel_radius", WHEEL_RADIUS))
         self.max_speed = float(params.get("max_speed", MAX_SPEED))
         self.max_steer = float(params.get("max_steer", MAX_STEER))
+        self.max_torque = float(params.get("max_torque", MAX_TORQUE))
         self.wheelbase = 2 * WHEELBASE_HALF
         self.track_half_width = TRACK_HALF_WIDTH
 
@@ -135,7 +141,7 @@ class RaceCarRobot(Robot):
                 target=f"rear_{side}_roll_joint",
                 trntype=mujoco.mjtTrn.mjTRN_JOINT,
                 ctrlrange=[-max_wheel_speed * 1.3, max_wheel_speed * 1.3],
-                forcerange=[-2.5, 2.5],
+                forcerange=[-self.max_torque, self.max_torque],
             )
             act.gaintype = mujoco.mjtGain.mjGAIN_FIXED
             gainprm = np.zeros(10)

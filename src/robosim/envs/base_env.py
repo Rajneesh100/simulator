@@ -100,7 +100,7 @@ class RoboSimEnv(gym.Env):
             self.world.model.geom(n).id for n in self.world.robot.collision_geom_names()
         }
         self._ground_geom_ids = set()
-        for n in self.world.scene.ground_geom_names():
+        for n in self.world.scene.collision_exempt_geom_names():
             try:
                 self._ground_geom_ids.add(self.world.model.geom(n).id)
             except KeyError:

@@ -103,6 +103,8 @@ def run_train(
     lidar_fov_deg: float = 270.0,
     lidar_max_range: float = 5.0,
     max_episode_steps: int = 500,
+    versus_checkpoint: str | None = None,
+    versus_opponents: int = 2,
 ) -> Path:
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -123,19 +125,30 @@ def run_train(
         lidar_max_range=lidar_max_range,
         max_episode_steps=max_episode_steps,
     )
+    env_cls = RoboSimEnv
+    if versus_checkpoint:
+        from robosim.envs.versus_env import VersusRaceEnv
+
+        if curriculum:
+            raise ValueError("--curriculum is not supported with --versus training")
+        env_cls = VersusRaceEnv
+        env_kwargs["opponent_checkpoint"] = versus_checkpoint
+        env_kwargs["opponents"] = versus_opponents
+        print(f"[train] VERSUS mode: learner races {versus_opponents} frozen opponents "
+              f"from {versus_checkpoint}")
     vec_cls = SubprocVecEnv if n_envs > 1 else DummyVecEnv
     try:
         vec_env = make_vec_env(
-            RoboSimEnv, n_envs=n_envs, seed=seed, env_kwargs=env_kwargs, vec_env_cls=vec_cls
+            env_cls, n_envs=n_envs, seed=seed, env_kwargs=env_kwargs, vec_env_cls=vec_cls
         )
     except Exception as e:  # SubprocVecEnv can fail to spawn in some sandboxes
         print(f"[train] {vec_cls.__name__} failed ({e}); falling back to DummyVecEnv")
         vec_env = make_vec_env(
-            RoboSimEnv, n_envs=n_envs, seed=seed, env_kwargs=env_kwargs, vec_env_cls=DummyVecEnv
+            env_cls, n_envs=n_envs, seed=seed, env_kwargs=env_kwargs, vec_env_cls=DummyVecEnv
         )
 
     eval_env = make_vec_env(
-        RoboSimEnv, n_envs=1, seed=seed + 10_000, env_kwargs=env_kwargs, vec_env_cls=DummyVecEnv
+        env_cls, n_envs=1, seed=seed + 10_000, env_kwargs=env_kwargs, vec_env_cls=DummyVecEnv
     )
 
     if policy == "p4":
@@ -220,6 +233,8 @@ def run_train(
         "lidar_fov_deg": lidar_fov_deg,
         "lidar_max_range": lidar_max_range,
         "max_episode_steps": max_episode_steps,
+        "versus_checkpoint": versus_checkpoint,
+        "versus_opponents": versus_opponents if versus_checkpoint else None,
         "domain_randomization": domain_randomization.to_dict() if domain_randomization else None,
         "bc_init": bc_init,
         "curriculum": curriculum,

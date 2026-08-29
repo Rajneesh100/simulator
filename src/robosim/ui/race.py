@@ -1,9 +1,12 @@
-"""Multi-car race: N identically-policied cars on one grid, first to `laps` wins.
+"""Multi-car race: N policy-driven cars on one grid, first to `laps` wins.
 
-Every car runs the SAME trained checkpoint — same brain, different starting slot — so
-differences come purely from grid position and car-to-car interaction (they see each
-other on lidar and can collide). A live leaderboard ranks cars by race distance; the race
-ends when the leader completes the lap target, and final standings print to the terminal.
+Pass ONE checkpoint and every car runs the same brain (differences come from grid slot,
+driver personality, and car-to-car interaction), or SEVERAL checkpoints (repeat
+--checkpoint) for a model-vs-model duel: cars are assigned round-robin, each car's roof
+tag and leaderboard entry carries its model's run name, and each model gets the lidar
+config and lookahead settings it was trained with (read from its own run config). A live
+leaderboard ranks cars by race distance; the race ends when the leader completes the lap
+target, and final standings print to the terminal.
 
 Two race-mode behaviors compensate for policies trained solo with crash-ends-episode
 (they never learned contact recovery, and a deterministic policy from a fixed grid makes
@@ -39,7 +42,7 @@ from robosim.core.world import build_multi_world
 from robosim.envs.obs import build_obs
 from robosim.envs.tasks.race import LOOKAHEAD_M, _point_at, _project
 from robosim.sensors.lidar import Lidar, body_subtree_ids
-from robosim.train.run_config import env_kwargs_from_run
+from robosim.train.run_config import env_kwargs_from_run, task_params_from_run
 from robosim.ui import overlay
 
 HUD_PERIOD = 0.1
@@ -48,6 +51,11 @@ STALL_TRIGGER_S = 1.5  # stopped this long -> start recovery
 RECOVERY_S = 0.9  # scripted reverse duration
 FLIP_UP_THRESHOLD = 0.3  # world-z of the body's up axis; below = on its side or roof
 FLIP_TRIGGER_S = 2.5  # tipped this long -> marshal puts it back on its wheels
+OFFTRACK_MARGIN = 0.4  # meters beyond the road edge that counts as escaped
+OFFTRACK_TRIGGER_S = 1.5  # escaped this long -> marshal brings it back
+WRONGWAY_TRIGGER_S = 2.5  # heading against the track this long -> marshal turns it around
+NO_PROGRESS_EPS = 0.5  # must gain this many meters of race distance...
+NO_PROGRESS_TRIGGER_S = 6.0  # ...within this window, else marshal (catch-all)
 
 PALETTE = [
     ("RED", (0.85, 0.10, 0.10)),
@@ -65,8 +73,15 @@ class _CarState:
     def __init__(self, world, i: int, lidar_kwargs: dict):
         prefix = world.prefixes[i]
         self.index = i
-        self.name, rgb = PALETTE[i % len(PALETTE)]
+        base_name, rgb = PALETTE[i % len(PALETTE)]
+        # colors repeat past 8 cars — RED2, GREEN2, ... keep names unique
+        lap_around = i // len(PALETTE)
+        self.name = base_name if lap_around == 0 else f"{base_name}{lap_around + 1}"
         self.rgba = (*rgb, 0.85)
+        self.model_idx = 0
+        self.tag = ""  # run name of the model driving this car (multi-model duels)
+        self.label = self.name  # display name; gains ":tag" in duels
+        self.la_time = 0.0
         self.lidar = Lidar(site_name=prefix + "lidar_site", **lidar_kwargs)
         self.chassis_id = world.model.body(world.root_body_names[i]).id
         self.body_ids = body_subtree_ids(world.model, self.chassis_id)
@@ -79,6 +94,10 @@ class _CarState:
         self.recovery_steer = 1.0
         self.trail: deque = deque(maxlen=400)
         self.flipped_for = 0.0
+        self.off_track_for = 0.0
+        self.wrong_way_for = 0.0
+        self.progress_anchor = 0.0
+        self.progress_timer = 0.0
         # driver personality — filled in by run_race from the race seed
         self.aggression = 1.0
         self.lookahead = LOOKAHEAD_M
@@ -121,8 +140,18 @@ def _tint_cars(world) -> None:
             world.model.geom_rgba[geom_id][:3] = rgb
 
 
+def _run_tag(checkpoint: str) -> str:
+    """Short label for a checkpoint: its run directory name (rally1, rally3, ...)."""
+    from pathlib import Path
+
+    d = Path(checkpoint).resolve().parent
+    if d.name == "checkpoints":
+        d = d.parent
+    return d.name
+
+
 def run_race(
-    checkpoint: str,
+    checkpoint: str | list[str],
     scene: str = "racetrack:obstacles=0",
     robot: str = "racecar",
     cars: int = 4,
@@ -131,57 +160,93 @@ def run_race(
     deterministic: bool = False,
     seed: int | None = None,
     variation: float = 0.5,
+    lookahead: float = LOOKAHEAD_M,
+    lookahead_time: float = 0.0,
 ) -> None:
     from robosim.train.play import _load_model
 
-    model, is_recurrent = _load_model(checkpoint)
+    checkpoints = [checkpoint] if isinstance(checkpoint, str) else list(checkpoint)
+    models = [_load_model(c) for c in checkpoints]  # [(model, is_recurrent), ...]
+    tags = [_run_tag(c) for c in checkpoints]
+    n_models = len(models)
     rng = np.random.default_rng(seed)
-    if seed is not None:  # stochastic action sampling goes through torch's RNG
-        import torch
+    # stochastic action sampling goes through torch's GLOBAL RNG, and SB3's load()
+    # just re-seeded it from the checkpoint's saved seed — so without reseeding here,
+    # every launch would sample the identical action stream.
+    import torch
 
-        torch.manual_seed(seed)
-    env_kwargs = env_kwargs_from_run(checkpoint)
-    lidar_kwargs = dict(
-        n_beams=env_kwargs.get("n_lidar_beams", 16),
-        fov_deg=env_kwargs.get("lidar_fov_deg", 270.0),
-        max_range=env_kwargs.get("lidar_max_range", 5.0),
-    )
+    torch.manual_seed(seed if seed is not None
+                      else int(np.random.SeedSequence().generate_state(1)[0]))
+    # per-model sensing + lookahead, each from its OWN run config (CLI values are the
+    # fallback for runs that didn't record them) — a brain must see the obs it trained on
+    lidar_kwargs_per_model, la_base, la_time = [], [], []
+    for c in checkpoints:
+        env_kwargs = env_kwargs_from_run(c)
+        lidar_kwargs_per_model.append(dict(
+            n_beams=env_kwargs.get("n_lidar_beams", 16),
+            fov_deg=env_kwargs.get("lidar_fov_deg", 270.0),
+            max_range=env_kwargs.get("lidar_max_range", 5.0),
+        ))
+        task_params = task_params_from_run(c)
+        la_base.append(float(task_params.get("lookahead", lookahead)))
+        la_time.append(float(task_params.get("lookahead_time", lookahead_time)))
 
     world = build_multi_world(scene, robot, n_cars=cars)
     info = world.scene.task_info()
     if "waypoints" not in info:
         raise SystemExit("robosim race needs a track scene (waypoints in task_info), e.g. racetrack")
-    pts = np.asarray(info["waypoints"], dtype=np.float64)
+    pts3 = np.asarray(info["waypoints"], dtype=np.float64)
+    pts = pts3[:, :2]
+    zs = pts3[:, 2] if pts3.shape[1] >= 3 else np.zeros(len(pts3))
     nxt = np.roll(pts, -1, axis=0)
     seg_len = np.hypot(*(nxt - pts).T)
     cum = np.concatenate([[0.0], np.cumsum(seg_len)])[:-1]
     total = float(info["track_length"])
 
+    def z_at(s: float) -> float:
+        """Road-surface height at arclength s (linear between waypoints)."""
+        s = s % total
+        i = int(np.searchsorted(cum, s, side="right") - 1)
+        j = (i + 1) % len(zs)
+        seg = seg_len[i] if seg_len[i] > 1e-9 else 1.0
+        frac = (s - cum[i]) / seg
+        return float(zs[i] + frac * (zs[j] - zs[i]))
+
     _tint_cars(world)
     movers = derive_movers(world.model, world.scene)
-    car_states = [_CarState(world, i, lidar_kwargs) for i in range(cars)]
+    car_states = []
     v = max(0.0, variation)
-    for car in car_states:
+    for i in range(cars):
+        m = i % n_models  # round-robin model assignment
+        car = _CarState(world, i, lidar_kwargs_per_model[m])
+        car.model_idx = m
+        car.tag = tags[m]
+        car.label = car.name if n_models == 1 else f"{car.name}:{car.tag}"
         pos, _ = world.car_pose(car.index)
         car.s, _ = _project(pts, cum, pos[:2])
         # driver personality: same brain, different style — this is what breaks the
         # copy-cat procession and produces real overtakes
         car.aggression = 1.0 + v * rng.uniform(-0.12, 0.06)
-        car.lookahead = LOOKAHEAD_M * (1.0 + v * rng.uniform(-0.35, 0.5))
+        car.lookahead = la_base[m] * (1.0 + v * rng.uniform(-0.35, 0.5))
+        car.la_time = la_time[m]
         car.jitter = v * rng.uniform(0.02, 0.12)
-        print(f"  {car.name:7s} aggression {car.aggression:.2f}  "
+        car_states.append(car)
+        print(f"  {car.label:15s} aggression {car.aggression:.2f}  "
               f"lookahead {car.lookahead:.2f} m  jitter {car.jitter:.3f}", flush=True)
+    group_indices = [[c.index for c in car_states if c.model_idx == m] for m in range(n_models)]
 
     state = overlay.OverlayState(speed=max(0.1, min(5.0, speed)))
     timer = overlay.HudTimer()
     steps_per_action = physics.physics_steps_per_control_step()
     control_dt = world.model.opt.timestep * steps_per_action
-    lstm_states = None
-    episode_starts = np.ones(cars, dtype=bool)
+    lstm_states = [None] * n_models
+    episode_starts = [np.ones(len(g), dtype=bool) for g in group_indices]
     winner: _CarState | None = None
     race_time = 0.0
 
-    def marshal_respawn(car: _CarState) -> None:
+    half_width = float(info["road_half_width"])
+
+    def marshal_respawn(car: _CarState, reason: str = "flip") -> None:
         """Set a flipped car back on its wheels on the centerline at its current s —
         no distance gained, velocities zeroed, small lateral nudge to avoid landing
         exactly on whoever flipped it."""
@@ -192,7 +257,7 @@ def run_race(
         normal = np.array([-d[1], d[0]]) / max(float(np.hypot(*d)), 1e-9)
         p = p + normal * rng.uniform(-0.3, 0.3)
         adr = world.qpos_adrs[car.index]
-        z = world.spawn_poses[car.index][0][2]
+        z = z_at(car.s) + world.robots[car.index].spawn_z_offset()
         half = yaw / 2.0
         world.data.qpos[adr : adr + 3] = [p[0], p[1], z]
         world.data.qpos[adr + 3 : adr + 7] = [np.cos(half), 0.0, 0.0, np.sin(half)]
@@ -202,7 +267,11 @@ def run_race(
         car.flipped_for = 0.0
         car.stalled_for = 0.0
         car.recovery_left = 0.0
-        print(f"[race] marshal: {car.name} back on its wheels", flush=True)
+        car.off_track_for = 0.0
+        car.wrong_way_for = 0.0
+        car.progress_anchor = car.progress
+        car.progress_timer = 0.0
+        print(f"[race] marshal: {car.label} back on track ({reason})", flush=True)
 
     def reset_race():
         nonlocal lstm_states, episode_starts, winner, race_time
@@ -216,9 +285,13 @@ def run_race(
             car.stalled_for = 0.0
             car.recovery_left = 0.0
             car.flipped_for = 0.0
+            car.off_track_for = 0.0
+            car.wrong_way_for = 0.0
+            car.progress_anchor = 0.0
+            car.progress_timer = 0.0
             car.trail.clear()
-        lstm_states = None
-        episode_starts = np.ones(cars, dtype=bool)
+        lstm_states = [None] * n_models
+        episode_starts = [np.ones(len(g), dtype=bool) for g in group_indices]
         winner = None
         race_time = 0.0
         state.trail.clear()
@@ -229,7 +302,11 @@ def run_race(
         else:
             overlay.handle_common_key(state, keycode, world=None)
 
-    print(f"robosim race — {cars} cars, same policy, first to {laps} laps wins")
+    if n_models == 1:
+        print(f"robosim race — {cars} cars, same policy, first to {laps} laps wins")
+    else:
+        print(f"robosim race — MODEL DUEL: {' vs '.join(tags)} across {cars} cars, "
+              f"first to {laps} laps wins")
     print("keys: space pause · -/= speed · c follow leader · x contacts · t trail · "
           "r restart · p screenshot · h hud", flush=True)
 
@@ -261,20 +338,28 @@ def run_race(
                     proprio = world.robots[car.index].read_proprio(
                         world.model, world.data, prefix=world.prefixes[car.index]
                     )
-                    goal = _point_at(pts, cum, total, car.s + car.lookahead)
+                    la = car.lookahead
+                    if car.la_time > 0:  # speed-scaled, matching this car's training
+                        la = max(la, world.car_speed(car.index) * car.la_time)
+                    goal = _point_at(pts, cum, total, car.s + la)
                     obs_rows.append(
                         build_obs(ranges, pos[:2], quat, goal, proprio, car.prev_action)
                     )
-                obs_batch = np.stack(obs_rows)
 
-                if is_recurrent:
-                    actions, lstm_states = model.predict(
-                        obs_batch, state=lstm_states, episode_start=episode_starts,
-                        deterministic=deterministic,
-                    )
-                    episode_starts[:] = False
-                else:
-                    actions, _ = model.predict(obs_batch, deterministic=deterministic)
+                actions = [None] * cars  # each model drives its own group of cars
+                for m, (model, is_recurrent) in enumerate(models):
+                    batch = np.stack([obs_rows[i] for i in group_indices[m]])
+                    if is_recurrent:
+                        acts, lstm_states[m] = model.predict(
+                            batch, state=lstm_states[m],
+                            episode_start=episode_starts[m],
+                            deterministic=deterministic,
+                        )
+                        episode_starts[m][:] = False
+                    else:
+                        acts, _ = model.predict(batch, deterministic=deterministic)
+                    for i, a in zip(group_indices[m], acts):
+                        actions[i] = a
 
                 for car, action in zip(car_states, actions):
                     action = np.asarray(action, dtype=np.float32)
@@ -297,8 +382,8 @@ def run_race(
                 race_time += control_dt
 
                 for car in car_states:
-                    pos, _ = world.car_pose(car.index)
-                    s_new, _ = _project(pts, cum, pos[:2])
+                    pos, quat = world.car_pose(car.index)
+                    s_new, lateral = _project(pts, cum, pos[:2])
                     ds = s_new - car.s
                     if ds < -total / 2:
                         ds += total
@@ -307,22 +392,52 @@ def run_race(
                     car.s = s_new
                     car.progress += float(np.clip(ds, -1.0, 1.0))
                     car.laps = max(car.laps, int(car.progress // total))
-                    # flipped? (real physics — cars CAN end up on their roof)
-                    _, quat = world.car_pose(car.index)
+
+                    # marshal watchdogs — physics stays real, but a car that stops
+                    # earning race distance gets brought back to the racing surface:
+                    # flipped (roof/side), escaped over a wall (hill-crest launches),
+                    # or the catch-all: no progress for a while, whatever the cause.
                     if _uprightness(quat) < FLIP_UP_THRESHOLD:
                         car.flipped_for += control_dt
-                        if car.flipped_for >= FLIP_TRIGGER_S:
-                            marshal_respawn(car)
                     else:
                         car.flipped_for = 0.0
+                    if lateral > half_width + OFFTRACK_MARGIN:
+                        car.off_track_for += control_dt
+                    else:
+                        car.off_track_for = 0.0
+                    # wrong way: heading opposes the track tangent while moving
+                    w_, x_, y_, z_ = quat
+                    yaw = np.arctan2(2 * (w_ * z_ + x_ * y_), 1 - 2 * (y_ * y_ + z_ * z_))
+                    ahead = np.array(_point_at(pts, cum, total, car.s + 1.0))
+                    here = np.array(_point_at(pts, cum, total, car.s))
+                    tangent = ahead - here
+                    heading_dot = float(np.cos(yaw) * tangent[0] + np.sin(yaw) * tangent[1])
+                    if heading_dot < -0.2 and world.car_speed(car.index) > 0.3:
+                        car.wrong_way_for += control_dt
+                    else:
+                        car.wrong_way_for = 0.0
+                    if car.progress - car.progress_anchor >= NO_PROGRESS_EPS:
+                        car.progress_anchor = car.progress
+                        car.progress_timer = 0.0
+                    else:
+                        car.progress_timer += control_dt
+
+                    if car.flipped_for >= FLIP_TRIGGER_S:
+                        marshal_respawn(car, "flip")
+                    elif car.off_track_for >= OFFTRACK_TRIGGER_S:
+                        marshal_respawn(car, "off track")
+                    elif car.wrong_way_for >= WRONGWAY_TRIGGER_S:
+                        marshal_respawn(car, "wrong way")
+                    elif car.progress_timer >= NO_PROGRESS_TRIGGER_S:
+                        marshal_respawn(car, "no progress")
                     if car.laps >= laps and winner is None:
                         winner = car
 
                 if winner is not None:
                     standings = sorted(car_states, key=lambda c: -c.race_distance())
-                    print(f"\nWINNER: {winner.name} in {race_time:.1f} s", flush=True)
+                    print(f"\nWINNER: {winner.label} in {race_time:.1f} s", flush=True)
                     for rank, car in enumerate(standings, 1):
-                        print(f"  P{rank} {car.name:7s} laps {car.laps} "
+                        print(f"  P{rank} {car.label:15s} laps {car.laps} "
                               f"({car.progress:.1f} m)", flush=True)
                 stepped = True
 
@@ -342,6 +457,23 @@ def run_race(
                         pos, _ = world.car_pose(car.index)
                         overlay.push_trail(car, pos)  # duck-typed: uses car.trail
                         overlay.draw_trail(scn, car.trail, rgba=car.rgba)
+                # roof tags: live position + unique name above every car
+                for rank, car in enumerate(standings, 1):
+                    pos, _ = world.car_pose(car.index)
+                    overlay.draw_label(
+                        scn, (pos[0], pos[1], pos[2] + 0.35),
+                        f"P{rank} {car.label}", car.rgba,
+                    )
+                if state.show_lidar:  # every car's rays, tinted in its own color
+                    for car in car_states:
+                        origin, dirs, ranges_m = car.lidar.debug_rays(
+                            world.model, world.data, exclude_body_id=car.chassis_id,
+                            exclude_body_ids=car.body_ids,
+                        )
+                        overlay.draw_lidar(
+                            scn, origin, dirs, ranges_m, car.lidar.max_range,
+                            rgba_hit=car.rgba,
+                        )
 
             if frame_start - last_hud > HUD_PERIOD:
                 last_hud = frame_start
@@ -350,9 +482,11 @@ def run_race(
                         f"P{rank}" for rank in range(1, len(standings) + 1)
                     )
                     board_right = "\n".join(
-                        f"{car.name} L{min(car.laps, laps)}/{laps} "
+                        f"{car.label} L{min(car.laps, laps)}/{laps} "
                         f"{car.progress:6.1f}m {world.car_speed(car.index):3.1f}m/s"
-                        + (" FLIP" if car.flipped_for > 0 else (" rec" if car.recovering else ""))
+                        + (" FLIP" if car.flipped_for > 0
+                           else (" OFF" if car.off_track_for > 0
+                                 else (" rec" if car.recovering else "")))
                         for car in standings
                     )
                     texts = [
@@ -370,7 +504,7 @@ def run_race(
                             (
                                 overlay.FONT_HUD,
                                 overlay.GRID.mjGRID_BOTTOM,
-                                f"WINNER: {winner.name} ({race_time:.1f} s) -- press r to race again",
+                                f"WINNER: {winner.label} ({race_time:.1f} s) -- press r to race again",
                                 None,
                             )
                         )

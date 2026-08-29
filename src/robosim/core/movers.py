@@ -6,9 +6,10 @@ types:
 
 - axis-sine (the original T7 movers): {"name", "axis": "x"|"y", "amplitude", "period",
   "base_pos"} — oscillates along one axis around base_pos.
-- waypoint loop (racetrack opponents): {"name", "path": "loop", "waypoints": [(x, y), ...],
-  "period", "phase", "z"} — drives around the closed polyline at constant speed, with the
-  mocap body's yaw following the path tangent. "phase" in [0, 1) staggers multiple movers.
+- waypoint loop (racetrack opponents): {"name", "path": "loop", "waypoints": [(x, y) or
+  (x, y, z), ...], "period", "phase", "z"} — drives around the closed polyline at constant
+  speed, yaw following the path tangent. 3D waypoints ride the track's elevation; "z" is
+  the body-center height above the waypoint. "phase" in [0, 1) staggers multiple movers.
 """
 
 from __future__ import annotations
@@ -57,8 +58,9 @@ def _loop_pose(m: dict[str, Any], t: float) -> tuple[np.ndarray, float]:
 def update_movers(data, movers: list[dict[str, Any]], t: float) -> None:
     for m in movers:
         if m.get("path") == "loop":
-            xy, yaw = _loop_pose(m, t)
-            data.mocap_pos[m["mocap_id"]] = [xy[0], xy[1], m.get("z", 0.0)]
+            p, yaw = _loop_pose(m, t)
+            base_z = p[2] if len(p) == 3 else 0.0
+            data.mocap_pos[m["mocap_id"]] = [p[0], p[1], base_z + m.get("z", 0.0)]
             half = yaw / 2.0
             data.mocap_quat[m["mocap_id"]] = [np.cos(half), 0.0, 0.0, np.sin(half)]
         else:

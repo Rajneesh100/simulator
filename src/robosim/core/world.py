@@ -125,7 +125,9 @@ def _grid_spawn_poses(scene, robot, n_cars: int) -> list[tuple[tuple[float, floa
 
     row_gap, lane_offset = 1.4, 0.4
     if waypoints is not None:
-        pts = np.asarray(waypoints, dtype=np.float64)
+        pts3 = np.asarray(waypoints, dtype=np.float64)
+        pts = pts3[:, :2]
+        zs = pts3[:, 2] if pts3.shape[1] >= 3 else np.zeros(len(pts3))
         nxt = np.roll(pts, -1, axis=0)
         seg_len = np.hypot(*(nxt - pts).T)
         cum = np.concatenate([[0.0], np.cumsum(seg_len)])[:-1]
@@ -136,11 +138,12 @@ def _grid_spawn_poses(scene, robot, n_cars: int) -> list[tuple[tuple[float, floa
             j = (idx + 1) % len(pts)
             frac = (s - cum[idx]) / max(seg_len[idx], 1e-9)
             p = pts[idx] + frac * (pts[j] - pts[idx])
+            slot_z = float(zs[idx] + frac * (zs[j] - zs[idx])) + robot.spawn_z_offset()
             d = pts[j] - pts[idx]
             tangent_yaw = float(np.arctan2(d[1], d[0]))
             normal = np.array([-d[1], d[0]]) / max(np.hypot(*d), 1e-9)
             side = lane_offset if i % 2 == 0 else -lane_offset
-            poses.append(((float(p[0] + side * normal[0]), float(p[1] + side * normal[1]), z), tangent_yaw))
+            poses.append(((float(p[0] + side * normal[0]), float(p[1] + side * normal[1]), slot_z), tangent_yaw))
     else:
         back = np.array([-np.cos(yaw), -np.sin(yaw)])
         left = np.array([-np.sin(yaw), np.cos(yaw)])

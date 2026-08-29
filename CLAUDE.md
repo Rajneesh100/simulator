@@ -287,4 +287,126 @@ observation from this same function so the real robot can emit an identical vect
   color (`draw_trail` grew an rgba param; `push_trail` duck-types onto any object with a
   `.trail`). Verified headless: 3 seeds → 3 different winners, incl. a 146.1 m vs 146.0 m
   finish. Real fix remains multi-car training/self-play.
+- **2026-07-12 — Race marshal: cars CAN physically flip (user saw RED on its roof after a
+  car-on-car hit — kept, it's honest rigid-body dynamics), but a flipped car is stranded
+  forever, so after 2.5 s below uprightness 0.3 (body z-axis world component) the marshal
+  respawns it wheels-down on the centerline at its CURRENT s (no distance gained,
+  velocities zeroed, small lateral nudge). "FLIP" shows on the leaderboard. Physics is
+  never altered — recovery only, like a real race marshal.
+- **2026-07-12 — Hills: the racetrack centerline is now 3D.** `hills=H` adds a seeded
+  periodic elevation profile (3 sine harmonics over arclength, amplitude auto-scaled to
+  respect `max_grade`, shifted so the lowest point sits at ground level). With hills the
+  road becomes a REAL physical surface — pitched box slabs (quat = Rz(yaw)·Ry(pitch)) the
+  cars drive on, walls standing on it — so climbs cost torque and descents add speed.
+  hills=0 reproduces the original flat geometry exactly (visual road on the ground
+  plane), keeping old checkpoints valid. task_info()["waypoints"] is now (x, y, z);
+  consumers that do planar math (race task, race viewer, grid) slice [:, :2], movers and
+  grid spawns use z. Caveat: the 2D lidar plane pitches with the car, so on crests the
+  forward beams see the road surface — policies trained on hills learn this; flat-trained
+  ones get confused.
+- **2026-07-12 — "Why does everyone drive at constant speed": because flat-out IS optimal
+  at max_speed=3** — no corner on the default track exceeds tire grip (3 m/s at r=2.5 m
+  needs 3.6 m/s² lateral vs ~11.8 m/s² available), so the policy correctly never brakes.
+  Real braking behavior requires a grip-limited car: `--robot racecar:max_speed=6`
+  (verified: reaches 5.99 m/s on a straight; 6 m/s at r=2.5 needs 14.4 m/s² > grip, so
+  corners physically demand slowing). Actuator ctrl ranges already scale with the
+  max_speed param. Play/evaluate/race must be given the same --robot arg the checkpoint
+  was trained with (robot params are not yet recorded in run config — future nicety).
+- **2026-07-12 — Race marshal watchdogs beyond flips: "off track" and "no progress".**
+  User-observed on hills: flat-trained cars launch off crests, clear the 0.35 m walls,
+  and circle OUTSIDE the track at full (real) speed with race progress frozen — the HUD
+  speed was honest chassis velocity, the car just wasn't going anywhere that counts.
+  Marshal now recovers: flipped (2.5 s), >0.4 m beyond the road edge (1.5 s), or the
+  catch-all <0.5 m progress gained in 6 s. Leaderboard flags FLIP/OFF/rec.
+- **2026-07-12 — Gravity vs motor authority: `racecar:max_torque=T` (default 2.5 N·m,
+  unchanged).** User asked why speed pins at max_speed on both climbs and descents.
+  Gravity IS simulated; the velocity-servo motors have ~7x the force of any legal grade,
+  so they cancel it both ways (regen braking downhill). Lower the torque cap and hills
+  become racing physics — measured with tilted-gravity probes: 0.5 N·m at 15 deg
+  downhill runs away to 10.5 m/s (commanded 3), at 8 deg uphill crawls at 0.24 m/s,
+  default 2.5 N·m holds 3.0 everywhere. Checkpoints must train and play with the same
+  robot params; robot args still aren't recorded in run config.
+- **2026-07-12 — Hills honesty + rally support.** Elevation is physically bounded by
+  grade x wavelength, so huge `hills=` values can't fit a short lap; instead of silently
+  squashing, the profile now PRINTS what it built and which knobs buy more. New
+  `hill_freq` (default 3; ~8 = rally-style bumpy) and `max_grade` up to ~0.3 for rally.
+  Track eye-candy: walls are now alternating red/white F1 kerb stripes (interleaved
+  between sides), dashed white centerline, checkered 2x8 start/finish line, grass-green
+  ground rgba (note: theme's grid material overrides it on themed builds). Physical-road
+  scenes needed a collision-exemption split: `Scene.collision_exempt_geom_names()`
+  (default = ground_geom_names) feeds `_collided()`, racetrack adds its road_i slabs —
+  scraping the road on a crest is driving, not crashing; ground_geom_names stays the
+  theming list.
+- **2026-07-12 — Speed ceiling is contact physics, not policy: ~15 m/s on this car
+  scale.** At 500 Hz a car moves v*0.002 m per physics step; walls are 0.08 m thick, so
+  beyond ~40 m/s (and in practice well before) contacts tunnel — a 100 m/s car crosses
+  0.2 m per step and phases through walls. 12-15 m/s on a 0.44 m car is already ~30
+  body-lengths/s (scale-equivalent of ~350 km/h). For faster: bigger scale + thicker
+  walls, or a smaller timestep (physics.py — global rule applies).
+- **2026-07-12 — Negative result: p3 LSTM + curriculum (rally2) lost badly to the plain
+  MLP (rally1) on the rally track.** 60 s race-mode probe (stochastic + marshals):
+  rally1 388 m / 1 rescue vs rally2's best checkpoint 139 m / 3 rescues. Two causes
+  identified: (1) RecurrentPPO instability at this budget — eval reward oscillated
+  108 → -4 → 87 → 6.5 over 1M steps; LSTMs need more samples/gentler hypers than the
+  same budget that trains the MLP cleanly. (2) **EvalCallback's best-model tracking is
+  broken across curriculum stages**: "best" locked in at 50k on the easy flat stage
+  (108.5), so no post-switch hills policy could ever beat it — best_model.zip from a
+  curriculum run is the WRONG artifact; use checkpoints/ + a post-hoc eval sweep to
+  pick (that's how 800k/900k were compared). Follow-up (rally3): p1 MLP, 2M steps,
+  direct hills, no curriculum. Also note eval "len 260, reward 87" episodes were
+  crashes after ~100 m, not lap completions — deterministic lap completion on rally
+  terrain hasn't been achieved by any checkpoint yet.
+- **2026-07-12 — rally3 (p1 MLP, 2M steps, direct hills, no curriculum) is the new rally
+  champion: 450 m/60 s (7.5 m/s) with ZERO marshal rescues vs rally1's 388 m / 1 rescue.**
+  Deterministic clean rally laps (~22 s, reward ~176) confirmed at several checkpoints;
+  best_model.zip (1.5M) is the keeper. Scaling the proven recipe beat architecture
+  cleverness (rally2's LSTM). PPO still oscillates late (eval 176 -> -53 -> 172 across
+  1.6M-1.9M) — the eval-selected best is what tames that.
+- **2026-07-12 — SB3 `load()` re-seeds torch's global RNG from the checkpoint's saved
+  seed.** Found because a 3-seed race probe returned bit-identical results: seeding
+  before `PPO.load()` is silently undone, and since race mode samples actions through
+  torch's global RNG, every `robosim race` launch (without --seed) replayed the same
+  action stream (only the numpy-side driver personalities differed). Fix: reseed torch
+  AFTER model load — from entropy when no --seed, from --seed otherwise.
+- **2026-07-12 — Hairpin weakness diagnosed as lookahead starvation; lookahead is now a
+  task param, optionally speed-scaled.** The obs goal point sat a fixed 2.5 m ahead —
+  at 7.5 m/s that's 0.33 s of warning, so the policy brakes late and runs wide in
+  U-turns. `--task race:lookahead=M,lookahead_time=S` sets goal distance =
+  max(M, speed x S) (verified: 6 m/s x 0.8 s -> 4.79 m). Changing it changes the obs
+  distribution — train and play/race with the SAME values (`robosim race` grew
+  --lookahead/--lookahead-time to match). Car-to-car note: lidar DOES see other cars
+  (only the own-body subtree is ray-excluded), and rally3 trained with 6 static
+  obstacles, so blob-dodging transfers — but a solo-trained policy has no concept of
+  obstacle MOTION; true wheel-to-wheel racecraft needs multi-car self-play training.
+- **2026-07-12 — Race polish: roof tags + model-vs-model duels.** Every car gets a
+  floating label (small mjvGeom sphere with `.label` text — `overlay.draw_label`)
+  showing its LIVE position + unique name (colors repeat past 8 cars: RED2, GREEN2...).
+  `--checkpoint` is now repeatable: cars are assigned to models round-robin, and each
+  model's cars get the lidar config AND race-task lookahead params that model trained
+  with, auto-read from its own run config (`task_params_from_run` parses the config's
+  task string) — a brain must see the obs distribution it trained on, even mid-duel.
+  Labels/leaderboard/standings show `NAME:runtag` in duels. Verified headless: rally1
+  vs rally3, 2 cars each — rally3's car won.
+- **2026-07-13 — Competitive training: `envs/versus_env.py` + `train --versus <ckpt>`.**
+  League mode, not simultaneous self-play (SB3 stays single-agent): car 0 learns while
+  cars 1..N run a FROZEN checkpoint (stochastic + light personality + anti-stall +
+  respawn so rivals stay live). Reward = race progress + signed OVERTAKE bonus (2/place)
+  + TAKEDOWN bonus (8 when an opponent wrecks within 1.5 s of learner contact) +
+  WIN 40 / LOSE 15 on first-to-laps; car-to-car contact is free, wall hits and flips
+  still terminate the learner (aggression must be aimed — pure ramming into walls kills
+  the rammer too). Grid slots shuffle per episode. Obs/action identical to solo race,
+  so versus checkpoints work in play/race/duels unchanged, and lookahead still rides
+  the task string. Versus is ~7x slower than solo (87 fps at n_envs=4: 3-car physics +
+  frozen inference) — warm-start via `--bc-init runs/rally3/policy_init.pt` (extracted
+  `policy.state_dict()`; recipe in README) so the budget buys racecraft, not driving
+  school. Curriculum is not supported with versus (guarded). Iterating the league
+  (train N+1 vs frozen N) is the self-play ladder.
+- **2026-07-13 — rally4 results: slower clean racer than rally3 (385 vs 450 m/60 s,
+  2 vs 0 rescues) but carries the recovery skills.** Its random_heading=0.3 episodes
+  bought U-turn/reorientation ability at the cost of pure pace (its eval numbers also
+  read low vs rally3 because a third of eval episodes start disoriented — not
+  comparable across runs with different task params). Versus-training split decided:
+  OPPONENT = rally3 (hardest clean rival), WARM START = rally4's weights (traffic
+  skills + obs semantics match the versus task's lookahead_time=0.6, which rally3's
+  fixed-lookahead weights don't).
 - (Further decisions get appended here as they're made — newest at the bottom.)
