@@ -61,7 +61,8 @@ gym dependency, so the env and the viewer share one implementation.
 - `fire >= 0.5` launches if the weapon is ready (else ignored).
 - `az` maps `[-1, 1] -> [-180°, +180°]` relative to heading (0 = straight ahead,
   +90° = left, ±180° = backwards).
-- `el` maps `[-1, 1] -> [0°, 45°]` (low-arc family only; the high arc is never useful
+- `el` maps `[-1, 1] -> [-15°, 45°]` (`-0.5` is level; launchers depress because the
+  muzzle sits 0.2 m above a close target's chassis; the high arc is never useful
   against cars).
 
 **Observation**: `build_obs(..., combat=None)` in `envs/obs.py` appends a combat block

@@ -347,6 +347,57 @@ but rally4 carries the recovery skills that matter in traffic — hence opponent
 warm-start=rally4. For a stronger league, repeat: train rally6 versus frozen rally5,
 and so on.)
 
+### Fire-fight: `--firearms rocket`
+
+Every car gets a rocket launcher (`src/robosim/combat/`). Rockets leave with the car's
+own velocity plus `--rocket-speed` (40 m/s) along the aim, fall under gravity (real
+parabola: range = v^2 sin(2 el) / g, ~1.8 deg of elevation for a 10 m shot; launchers
+depress to -15 deg for close targets), detonate on the first thing they touch, and
+destroy every car within 2 m — the shooter included. A destroyed car turns charcoal,
+tumbles, and is rebuilt by the marshal after 4 s. Kills/deaths show on the leaderboard.
+
+Watch it today with any checkpoint (weaponless brains get a scripted intercept gunner
+that solves the moving-platform / moving-target ballistics exactly, plus a little aim
+noise scaled by `--variation`):
+
+```bash
+uv run robosim race --checkpoint runs/rally5/best_model.zip \
+  --scene "racetrack:layout=gp,scale=18,seed=11,obstacles=0,road_width=3.5" \
+  --robot racecar:max_speed=12,max_torque=1.2 \
+  --cars 5 --laps 5 --variation 0.8 --firearms rocket
+```
+
+Train a brain that shoots and dodges itself — rally6. The action grows to
+`[throttle, steer, fire, az, el]` and the obs gains a 16-float combat block (3 nearest
+rivals' range / bearing / closing speed, weapon ready, nearest incoming rocket — see
+`envs/obs.py`). The learner gets NO ballistic solver: it has to learn the lead and the
+elevation from those numbers. Opponents are frozen rally5 drivers with the scripted
+gunner, so there is real incoming fire to dodge. rally5's weights are expanded in place
+(zero-padded new obs columns / action rows, fire bias -1) so it starts out driving
+exactly like rally5 and only has to learn to shoot and survive:
+
+```bash
+uv run python -c "import torch; from stable_baselines3 import PPO; torch.save(PPO.load('runs/rally5/best_model.zip', device='cpu').policy.state_dict(), 'runs/rally5/policy_init.pt')"
+uv run robosim train --task "race:laps=2,lookahead=2.5,lookahead_time=0.6" \
+  --scene "racetrack:layout=gp,scale=25,seed=11,hills=6,max_grade=0.3,hill_freq=8,road_width=3.5" \
+  --robot racecar:max_speed=12,max_torque=1.2 --steps 1000000 --n-envs 8 \
+  --lidar-beams 48 --lidar-fov 360 --lidar-range 12 --max-episode-steps 1500 \
+  --versus runs/rally5/best_model.zip --versus-opponents 2 \
+  --firearms rocket --rocket-speed 40 \
+  --bc-init runs/rally5/policy_init.pt --run-name rally6
+
+# then: rally6 (policy gunner) vs rally5 (scripted gunner)
+uv run robosim race --checkpoint runs/rally6/best_model.zip --checkpoint runs/rally5/best_model.zip \
+  --scene "racetrack:layout=gp,scale=18,seed=11,obstacles=0,road_width=3.5" \
+  --robot racecar:max_speed=12,max_torque=1.2 --cars 6 --laps 5 --firearms rocket
+```
+
+Reward in versus+firearms: +15 per kill, -20 and episode over when destroyed (own blast
+included), -0.3 per shot, on top of the usual progress/overtake/takedown/win terms.
+`firearms`/`rocket_speed` are recorded in the run's config.yaml and recovered by
+`play`/`race` like the lidar settings; a checkpoint trained with rockets refuses to race
+without `--firearms rocket`. For a stronger league, train rally7 versus frozen rally6.
+
 MODEL DUELS — repeat `--checkpoint` to pit different trained models against each other
 (cars assigned round-robin; roof tags and the leaderboard show `COLOR:runname`; each
 model automatically gets the lidar/lookahead settings it trained with):

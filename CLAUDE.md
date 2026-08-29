@@ -409,4 +409,25 @@ observation from this same function so the real robot can emit an identical vect
   OPPONENT = rally3 (hardest clean rival), WARM START = rally4's weights (traffic
   skills + obs semantics match the versus task's lookahead_time=0.6, which rally3's
   fixed-lookahead weights don't).
+- **2026-08-30 — Rockets are Python projectiles, not MuJoCo bodies (`combat/rockets.py`).**
+  A rocket is (pos, vel, owner) stepped every 2 ms substep with the model's gravity and
+  an `mj_ray` sweep for impact; a blast sphere (2 m) kills every chassis inside, shooter
+  included. No spec changes, so every pre-existing checkpoint/scene/command is untouched
+  when `--firearms none` (default). Policy interface with firearms: action
+  [throttle, steer, fire, az, el]; obs += 16-float combat block (3 nearest rivals'
+  range/bearing/closing speed, weapon ready, nearest incoming rocket) — still defined
+  only in `envs/obs.py`. The learner gets NO ballistic solver; opponents (and weaponless
+  checkpoints in race mode) use `combat/gunner.py`'s exact intercept (bisection on
+  flight time for |v_req(t) - v_shooter| = speed), so incoming fire is well aimed and
+  dodging is worth learning. Two things the first tests caught: (1) launchers must be
+  able to DEPRESS (el down to -15 deg) — the muzzle sits 0.2 m above the target's
+  chassis, so anything closer than ~8 m needs a downward shot and a 0-deg floor made
+  the gunner mute; (2) the gunner must skip the nearest rival when the blast would
+  include itself and try the next one, otherwise cars bunched off the grid never fire.
+  Warm start across the space change: `bc.expand_policy_state_dict` zero-pads new obs
+  columns and action rows (fire bias -1), reproducing the old policy exactly on old
+  inputs — `train --bc-init` does it automatically when shapes mismatch. Frozen
+  opponents keep their own obs layout (`VersusRaceEnv._opp_obs`) — a brain must see
+  the obs it trained on. Test gotcha: `mj_ray` treats a plane's `size` as finite
+  half-extents, so a rocket landing beyond the flat scene's 10 m ground never "hits".
 - (Further decisions get appended here as they're made — newest at the bottom.)

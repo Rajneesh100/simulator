@@ -49,9 +49,21 @@ rendering changes, press the same key again to undo — that's MuJoCo, not a sce
       chases the robot, `-`/`=` change playback speed.
 - [ ] Per-episode summary lines print in the terminal; final "Done: n/5 successful".
 
+## 4. `uv run robosim race --checkpoint runs/rally5/best_model.zip --scene "racetrack:layout=gp,scale=18,seed=11,obstacles=0,road_width=3.5" --robot racecar:max_speed=12,max_torque=1.2 --cars 5 --laps 5 --variation 0.8 --firearms rocket` (~45s)
+
+- [ ] Terminal prints `firearms: rocket at 40 m/s -- 0 policy gunners, 5 scripted`.
+- [ ] Colored capsules with fading exhaust puffs fly real arcs (slight drop over
+      distance); a short aim line shows on each car while it reloads.
+- [ ] Impact: orange fireball swells and fades over ~0.5 s with a ring on the ground
+      marking the 2 m damage circle.
+- [ ] Hit car turns charcoal, tumbles, leaderboard shows `DEAD`; after ~4 s the
+      terminal prints `marshal: ... back on track (destroyed)` and its color returns.
+- [ ] Leaderboard rows carry `K#/D#`; terminal prints `KILL: RED -> BLUE` and
+      `SELF-KILL: ...` when a car fires point-blank.
+
 Known cosmetic quirk: `r` (reset) also toggles the native floor-reflection flag —
 subtle, and pressing `r` twice restores it; MuJoCo offers no way to suppress it.
 
 Anything that fails: note the item number — the mapping to code is
-1→`ui/view.py`+`core/theme.py`, 2→`ui/teleop.py`, 3→`train/play.py`, shared chrome in
-`ui/overlay.py`.
+1→`ui/view.py`+`core/theme.py`, 2→`ui/teleop.py`, 3→`train/play.py`, 4→`ui/race.py`+
+`combat/`, shared chrome in `ui/overlay.py`.
