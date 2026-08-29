@@ -452,4 +452,18 @@ observation from this same function so the real robot can emit an identical vect
   gunner skips targets inside arming range and any shot whose impact lands within
   blast + 1 m of `my_pos + my_vel * t_flight`, and the learner pays
   DEATH_PENALTY + SELF_KILL_PENALTY (-30) with `info["self_kill"]` for own-blast deaths.
+- **2026-08-30 — rally6 v1 never learned to shoot: sparse aim reward needs a prior +
+  shaping.** Diagnosis (deterministic rollouts in its own env): elevation head mean
+  36-41 deg with p90 pinned at the 45 deg limit, fire rate 1%, 0 kills in 600 steps — the
+  eval score of 85 was pure racing. A kill needs fire + az + el right simultaneously; from
+  a random aim head that never happens, so PPO only saw "-0.3 per shot" and "max
+  elevation never self-harms". Three root-cause fixes: (1) `robosim distill-aim` — roll
+  the teacher (rally5) driving + the LOS scripted gunner deciding [fire, az, el], fit the
+  expanded net by regression (drive targets keep driving identical; aim targets masked to
+  steps where the gunner fired) -> `--bc-init` starts out shooting like the maths gunner;
+  (2) near-miss shaping: every rocket tracks closest approach to a rival, a miss pays
+  `3*exp(-(closest-2)/1.5)` so "almost" has gradient; (3) elevation gimbal narrowed to
+  -10..+20 deg (105 m reach — the old 45 deg cap was 80% useless range), fire bias 0
+  (explore shooting), new-dim log_std -1. Race-mode gotcha that compounded it: the user's
+  scene string omitted `obstacles=0`, so rally6 (trained without obstacles) met 6 blobs.
 - (Further decisions get appended here as they're made — newest at the bottom.)

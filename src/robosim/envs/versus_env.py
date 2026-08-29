@@ -61,6 +61,8 @@ KILL_BONUS = 15.0  # opponent destroyed by a rocket the learner fired
 DEATH_PENALTY = 20.0  # learner destroyed (any rocket, own blast included) -> episode over
 SHOT_COST = 0.3  # per launch, so it aims instead of spraying
 SELF_KILL_PENALTY = 10.0  # on top of DEATH_PENALTY: blowing yourself up is the worst death
+NEAR_MISS_BONUS = 3.0  # a miss pays NEAR_MISS_BONUS * exp(-(closest - blast_radius)/SIGMA):
+NEAR_MISS_SIGMA = 1.5  # dense "almost" signal so the aim head has a gradient to climb
 OPP_GUN_RANGE = 20.0
 OPP_AIM_SIGMA_DEG = 2.0
 
@@ -505,6 +507,7 @@ class VersusRaceEnv(gym.Env):
             kills = 0
             killed = False
             self_killed = False
+            near_miss = 0.0
             for ev in self.rockets.pop_events():
                 if ev["type"] == "kill" and ev["shooter"] == 0:
                     kills += 1
@@ -513,7 +516,11 @@ class VersusRaceEnv(gym.Env):
                 elif ev["type"] == "self_kill" and ev["car"] == 0:
                     killed = True
                     self_killed = True
-            reward += KILL_BONUS * kills - SHOT_COST * shots
+                elif ev["type"] == "miss" and ev["car"] == 0 and np.isfinite(ev["closest"]):
+                    gap = max(0.0, ev["closest"] - self.rockets.blast_radius)
+                    near_miss += NEAR_MISS_BONUS * float(np.exp(-gap / NEAR_MISS_SIGMA))
+                    info["near_miss_m"] = float(ev["closest"])
+            reward += KILL_BONUS * kills - SHOT_COST * shots + near_miss
             if self_killed:
                 reward -= SELF_KILL_PENALTY
                 info["self_kill"] = True

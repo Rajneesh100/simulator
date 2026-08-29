@@ -27,8 +27,10 @@ MIN_ARM_M = 4.0  # safety arming distance: an impact closer than this is a dud (
 #                  like a real RPG/ATGM fuze — point-blank shots can't be suicide
 MAX_FLIGHT_S = 4.0  # self-destruct (no blast) after this
 LAUNCH_HEIGHT = 0.2  # m above chassis center, clears cabin and wheels
-MAX_ELEVATION = np.pi / 4  # low-arc family only
-MIN_ELEVATION = -np.pi / 12  # 15 deg of depression: close targets sit below the launcher
+MAX_ELEVATION = np.deg2rad(20.0)  # gimbal limit: 40 m/s still reaches 105 m at 20 deg
+MIN_ELEVATION = np.deg2rad(-10.0)  # depression: close targets sit below the launcher
+# el command that means "level" — the aim head's natural resting point
+LEVEL_EL_CMD = -1.0 + 2.0 * (0.0 - MIN_ELEVATION) / (MAX_ELEVATION - MIN_ELEVATION)
 TRAIL_LEN = 40  # substep positions kept for the exhaust animation
 KILL_IMPULSE_UP = 4.0  # m/s added to a destroyed car
 KILL_IMPULSE_RADIAL = 3.0
@@ -51,11 +53,19 @@ def aim_direction(yaw: float, az: float, el: float) -> np.ndarray:
 
 def action_to_aim(az_cmd: float, el_cmd: float) -> tuple[float, float]:
     """Policy action -> angles: az [-1,1] -> [-pi, pi],
-    el [-1,1] -> [MIN_ELEVATION, MAX_ELEVATION] (el_cmd = -0.5 is level)."""
+    el [-1,1] -> [MIN_ELEVATION, MAX_ELEVATION] (el_cmd = LEVEL_EL_CMD is level)."""
     az = float(np.clip(az_cmd, -1.0, 1.0)) * np.pi
     frac = (float(np.clip(el_cmd, -1.0, 1.0)) + 1.0) / 2.0
     el = MIN_ELEVATION + frac * (MAX_ELEVATION - MIN_ELEVATION)
     return az, el
+
+
+def aim_to_action(az: float, el: float) -> tuple[float, float]:
+    """Inverse of action_to_aim (used to turn a scripted gunner's aim into labels)."""
+    az_cmd = float(np.arctan2(np.sin(az), np.cos(az))) / np.pi
+    el = float(np.clip(el, MIN_ELEVATION, MAX_ELEVATION))
+    el_cmd = -1.0 + 2.0 * (el - MIN_ELEVATION) / (MAX_ELEVATION - MIN_ELEVATION)
+    return az_cmd, el_cmd
 
 
 @dataclass
@@ -67,6 +77,7 @@ class Rocket:
     traveled: float = 0.0
     trail: deque = field(default_factory=lambda: deque(maxlen=TRAIL_LEN))
     alive: bool = True
+    closest: float = float("inf")  # nearest approach to any rival during flight
 
 
 @dataclass
@@ -202,17 +213,35 @@ class RocketSystem:
             hit = self._first_hit(model, data, start, direction, seg_len, rocket)
             if hit is not None:
                 rocket.alive = False
+                self._track_closest(data, rocket, hit)
                 if rocket.traveled + float(np.linalg.norm(hit - start)) < MIN_ARM_M:
                     self._events.append({"type": "dud", "car": rocket.owner})
+                    self._miss(rocket)
                     return  # fuze not armed yet: no blast
-                self.detonate(model, data, hit, rocket.owner)
+                blast = self.detonate(model, data, hit, rocket.owner)
+                if not any(v != rocket.owner for v in blast.victims):
+                    self._miss(rocket)
                 return
         rocket.pos = start + seg
         rocket.traveled += seg_len
         rocket.age += dt
         rocket.trail.append(rocket.pos.copy())
+        self._track_closest(data, rocket, rocket.pos)
         if rocket.age >= MAX_FLIGHT_S:
             rocket.alive = False  # fizzles mid-air, no blast
+            self._miss(rocket)
+
+    def _track_closest(self, data, rocket: Rocket, point) -> None:
+        for i in range(self.n_cars):
+            if i == rocket.owner or self.is_dead(i):
+                continue
+            d = float(np.linalg.norm(self.car_pos(data, i) - point))
+            if d < rocket.closest:
+                rocket.closest = d
+
+    def _miss(self, rocket: Rocket) -> None:
+        """A rocket that killed no rival: report how close it came (reward shaping)."""
+        self._events.append({"type": "miss", "car": rocket.owner, "closest": rocket.closest})
 
     def _first_hit(self, model, data, pnt, direction, seg_len, rocket) -> np.ndarray | None:
         """Nearest geom on the swept segment, skipping the owner's own body while the

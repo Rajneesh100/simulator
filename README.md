@@ -379,14 +379,19 @@ gunner, so there is real incoming fire to dodge. rally5's weights are expanded i
 exactly like rally5 and only has to learn to shoot and survive:
 
 ```bash
-uv run python -c "import torch; from stable_baselines3 import PPO; torch.save(PPO.load('runs/rally5/best_model.zip', device='cpu').policy.state_dict(), 'runs/rally5/policy_init.pt')"
+# 1. distill the scripted gunner into rally5's expanded aim head (~2 min). Without this
+#    PPO never finds a hit by chance and learns "don't fire / aim at the sky" (rally6 v1).
+uv run robosim distill-aim --checkpoint runs/rally5/best_model.zip --out runs/rally5/aim_init.pt \
+  --scene "racetrack:layout=gp,scale=25,seed=11,hills=6,max_grade=0.3,hill_freq=8,road_width=3.5,obstacles=0" \
+  --robot racecar:max_speed=12,max_torque=1.2 --steps 20000
+# 2. PPO from that warm start: refines aim, learns timing and dodging
 uv run robosim train --task "race:laps=2,lookahead=2.5,lookahead_time=0.6" \
-  --scene "racetrack:layout=gp,scale=25,seed=11,hills=6,max_grade=0.3,hill_freq=8,road_width=3.5" \
+  --scene "racetrack:layout=gp,scale=25,seed=11,hills=6,max_grade=0.3,hill_freq=8,road_width=3.5,obstacles=0" \
   --robot racecar:max_speed=12,max_torque=1.2 --steps 1000000 --n-envs 8 \
   --lidar-beams 48 --lidar-fov 360 --lidar-range 12 --max-episode-steps 1500 \
   --versus runs/rally5/best_model.zip --versus-opponents 2 \
   --firearms rocket --rocket-speed 40 \
-  --bc-init runs/rally5/policy_init.pt --run-name rally6
+  --bc-init runs/rally5/aim_init.pt --run-name rally6
 
 # then: rally6 (policy gunner) vs rally5 (scripted gunner)
 uv run robosim race --checkpoint runs/rally6/best_model.zip --checkpoint runs/rally5/best_model.zip \
@@ -407,8 +412,10 @@ physics-truth ablation for debugging. The 48-beam lidar stays for driving; it ca
 resolve a car past ~3 m (7.5 deg between beams), which is why sight is modeled as eyes.
 
 Reward in versus+firearms: +15 per kill, -20 and episode over when destroyed (-30 if
-it was your own blast), -0.3 per shot, on top of the usual progress/overtake/takedown/win
-terms. Scripted gunners hold fire when the predicted impact is inside the arming
+it was your own blast), -0.3 per shot, plus a NEAR-MISS bonus `3 * exp(-(closest - 2 m)/1.5)`
+for every rocket that killed nobody (closest approach to any rival is tracked in flight),
+on top of the usual progress/overtake/takedown/win terms. The launcher gimbal is
+-10..+20 deg of elevation (105 m max range at 40 m/s). Scripted gunners hold fire when the predicted impact is inside the arming
 distance or within blast radius + 1 m of where THEY will be at impact time.
 `firearms`/`rocket_speed` are recorded in the run's config.yaml and recovered by
 `play`/`race` like the lidar settings; a checkpoint trained with rockets refuses to race

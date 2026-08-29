@@ -162,6 +162,58 @@ def play(
     )
 
 
+@app.command(name="evaluate-versus")
+def evaluate_versus_cmd(
+    checkpoint: str = typer.Option(..., help="Checkpoint to score (the learner)"),
+    opponent: str = typer.Option(..., help="Frozen opponent checkpoint (gets scripted gunners if firearms)"),
+    scene: str = typer.Option(..., help="Track scene"),
+    robot: str = typer.Option("racecar", help="Robot string (match training)"),
+    task: str = typer.Option("race", help="Task string; lookahead params auto-recovered from the run config"),
+    episodes: int = typer.Option(10, help="Seeded episodes"),
+    seed: int = typer.Option(0, help="Base seed"),
+    opponents: int = typer.Option(2, help="Opponent cars"),
+    sampled: bool = typer.Option(False, "--sampled", help="Sample actions instead of the mean"),
+    max_steps: int = typer.Option(1500, help="Control steps per episode"),
+):
+    """Fire-fight scorecard: kills, deaths, self-kills, hit rate, wins, progress vs an opponent."""
+    from robosim.train.evaluate import evaluate_versus
+
+    evaluate_versus(
+        checkpoint, opponent, scene=scene, robot=robot, task=task, episodes=episodes,
+        seed=seed, deterministic=not sampled, opponents=opponents, max_steps=max_steps,
+    )
+
+
+@app.command(name="distill-aim")
+def distill_aim_cmd(
+    checkpoint: str = typer.Option(..., help="Weaponless checkpoint to teach (e.g. runs/rally5/best_model.zip)"),
+    out: str = typer.Option(..., help="Output .pt for --bc-init (e.g. runs/rally5/aim_init.pt)"),
+    scene: str = typer.Option(..., help="Same track you will train on"),
+    robot: str = typer.Option("racecar", help="Same robot string you will train with"),
+    task: str = typer.Option("race:laps=2,lookahead=2.5,lookahead_time=0.6", help="Task string"),
+    steps: int = typer.Option(20_000, help="Env steps to record (teacher drives, gunner aims)"),
+    epochs: int = typer.Option(30, help="Supervised epochs"),
+    opponents: int = typer.Option(2, help="Opponent cars"),
+    rocket_speed: float = typer.Option(40.0, help="Rocket muzzle speed m/s"),
+    combat_sensor: str = typer.Option("los", help="los | oracle"),
+    seed: int = typer.Option(0, help="Seed"),
+):
+    """Distill the scripted rocket gunner into a checkpoint's expanded aim head (warm start
+    for `train --firearms rocket --bc-init <out>`)."""
+    from robosim.train.bc import distill_aim
+    from robosim.train.run_config import env_kwargs_from_run
+
+    kw = env_kwargs_from_run(checkpoint)
+    distill_aim(
+        checkpoint, out, scene=scene, robot=robot, task=task, steps=steps, epochs=epochs,
+        seed=seed, opponents=opponents,
+        n_lidar_beams=kw.get("n_lidar_beams", 16), lidar_fov_deg=kw.get("lidar_fov_deg", 270.0),
+        lidar_max_range=kw.get("lidar_max_range", 5.0),
+        max_episode_steps=kw.get("max_episode_steps", 1500),
+        rocket_speed=rocket_speed, combat_sensor=combat_sensor,
+    )
+
+
 @app.command()
 def race(
     checkpoint: list[str] = typer.Option(

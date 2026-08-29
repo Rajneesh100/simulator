@@ -74,13 +74,16 @@ class ScriptedGunner:
         self.rng = rng if rng is not None else np.random.default_rng()
 
     def decide(self, system: RocketSystem, data, shooter: int, perception=None,
-               model=None, now: float = 0.0) -> tuple[float, float] | None:
+               model=None, now: float = 0.0,
+               ignore_cooldown: bool = False) -> tuple[float, float] | None:
         """Pick a target and return (az_rel, el), or None. With `perception` (a
         `combat.perception.Perception`, needs `model` and the sim time `now`) the gunner
         only knows rivals it can SEE and their estimated velocities; without it, it reads
         the physics state (oracle)."""
-        if not system.ready(shooter):
+        if system.is_dead(shooter):
             return None
+        if not ignore_cooldown and not system.ready(shooter):
+            return None  # ignore_cooldown: "is a shot viable now?" — used for labels
         sp = system.car_pos(data, shooter) + np.array([0.0, 0.0, LAUNCH_HEIGHT])
         sv = system.car_vel(data, shooter)
         yaw = system.car_yaw(data, shooter)

@@ -4,6 +4,7 @@ import mujoco
 import numpy as np
 import pytest
 
+from robosim.combat.rockets import LEVEL_EL_CMD as _LEVEL
 from robosim.core import physics
 from robosim.core.world import build_multi_world
 from robosim.sensors.lidar import body_subtree_ids
@@ -45,7 +46,9 @@ def _fly(world, system, seconds):
 
 
 def test_aim_direction_and_action_mapping():
-    from robosim.combat.rockets import MIN_ELEVATION, action_to_aim, aim_direction
+    from robosim.combat.rockets import (
+        MAX_ELEVATION, MIN_ELEVATION, action_to_aim, aim_direction, aim_to_action,
+    )
 
     d = aim_direction(0.0, 0.0, 0.0)
     assert np.allclose(d, [1, 0, 0])
@@ -55,19 +58,22 @@ def test_aim_direction_and_action_mapping():
     assert np.isclose(d[2], np.sin(np.pi / 4)) and np.isclose(np.linalg.norm(d), 1.0)
     az, el = action_to_aim(-1.0, -1.0)
     assert np.isclose(az, -np.pi) and np.isclose(el, MIN_ELEVATION)
-    assert np.isclose(action_to_aim(0.0, -0.5)[1], 0.0)  # -0.5 is level
+    assert np.isclose(action_to_aim(0.0, _LEVEL)[1], 0.0)  # LEVEL_EL_CMD is level
     az, el = action_to_aim(0.5, 1.0)
-    assert np.isclose(az, np.pi / 2) and np.isclose(el, np.pi / 4)
+    assert np.isclose(az, np.pi / 2) and np.isclose(el, MAX_ELEVATION)
+    for az0, el0 in ((0.3, 0.1), (-2.5, -0.05), (3.0, 0.3)):  # inverse mapping round-trips
+        az1, el1 = action_to_aim(*aim_to_action(az0, el0))
+        assert np.isclose(az1, az0) and np.isclose(el1, el0)
 
 
 def test_rocket_follows_parabola_to_analytic_range():
-    """Fired at 30 deg from a stationary car on flat ground, the rocket lands near
+    """Fired at 15 deg from a stationary car on flat ground, the rocket lands near
     v^2 sin(2*el)/g (+ the small extra from launch height)."""
     world = _make_world(1, scene="flat")
     speed = 10.0  # keeps the landing inside the flat scene's finite ground plane
     system = _rocket_system(world, rocket_speed=speed)
     _place(world, 0, (0.0, 0.0), 0.0)
-    el = np.deg2rad(30)
+    el = np.deg2rad(15)
     rocket = system.fire(world.data, 0, az=0.0, el=el)
     assert rocket is not None
     launch = rocket.pos.copy()
@@ -78,7 +84,7 @@ def test_rocket_follows_parabola_to_analytic_range():
             landed = system.blasts[0].pos.copy()
             break
     assert not rocket.alive and landed is not None
-    flat_range = speed**2 * np.sin(2 * el) / G  # 8.8 m
+    flat_range = speed**2 * np.sin(2 * el) / G  # 5.1 m
     dist = np.hypot(*(landed[:2] - launch[:2]))
     assert flat_range < dist < flat_range + 1.5  # launch height adds a little
 
@@ -176,7 +182,9 @@ def test_solve_intercept_hits_crossing_target():
     sol = solve_intercept(shooter_pos, shooter_vel, target_pos, target_vel, 40.0, G)
     assert sol is not None
     heading, el, t = sol
-    assert -np.pi / 12 <= el <= np.pi / 4 and 0.1 < t < 1.0
+    from robosim.combat.rockets import MAX_ELEVATION, MIN_ELEVATION
+
+    assert MIN_ELEVATION <= el <= MAX_ELEVATION and 0.1 < t < 1.0
     vel = shooter_vel + 40.0 * aim_direction(0.0, heading, el)
     rocket_at_t = _simulate_flight(shooter_pos, vel, G, t)
     target_at_t = target_pos + target_vel * t
@@ -338,8 +346,8 @@ def test_versus_learner_kill_reward_and_shot_cost():
     _park_on_straight(env, [(0, 2.0), (1, 10.0)])  # opponent 8 m straight ahead
     env.opp_model = _NoOpModel()  # opponent sits still
     env._gunners[1] = None  # and does not shoot back
-    fire = np.array([0.0, 0.0, 1.0, 0.0, -0.5], dtype=np.float32)  # fire, az 0, el 0
-    hold = np.array([0.0, 0.0, 0.0, 0.0, -0.5], dtype=np.float32)
+    fire = np.array([0.0, 0.0, 1.0, 0.0, _LEVEL], dtype=np.float32)  # fire, az 0, el 0
+    hold = np.array([0.0, 0.0, 0.0, 0.0, _LEVEL], dtype=np.float32)
     _, r0, *_ = env.step(fire)
     total = r0
     killed = False
@@ -372,7 +380,7 @@ def test_versus_opponents_shoot_and_respawn():
     env.reset(seed=1)
     _park_on_straight(env, [(1, 1.0), (2, 2.0), (0, 12.0)])
     env.opp_model = _NoOpModel()  # opponents only shoot, no driving
-    hold = np.array([0.0, 0.0, 0.0, 0.0, -0.5], np.float32)
+    hold = np.array([0.0, 0.0, 0.0, 0.0, _LEVEL], np.float32)
     shots, killed = 0, False
     for _ in range(100):
         _, _, term, trunc, info = env.step(hold)
@@ -419,7 +427,8 @@ def test_expand_policy_state_dict_preserves_original_outputs():
     assert new["mlp_extractor.value_net.0.weight"].shape == (hidden, 77)
     assert new["action_net.weight"].shape == (5, hidden)
     assert new["log_std"].shape == (5,)
-    assert new["action_net.bias"][2].item() == -1.0  # fire stays off until learned
+    assert new["action_net.bias"][2].item() == 0.0  # fire: 50/50 so shooting gets explored
+    assert torch.allclose(new["log_std"][2:], torch.full((3,), -1.0))  # std 0.37 on new dims
     obs = torch.randn(4, obs_old)
     padded = torch.cat([obs, torch.zeros(4, 19)], dim=1)
 
@@ -625,3 +634,95 @@ def test_versus_self_kill_costs_extra():
     _, r, term, _, info = env.step(np.zeros(5, dtype=np.float32))
     assert term and info.get("self_kill") is True
     assert r <= -(DEATH_PENALTY + SELF_KILL_PENALTY) + 1.0
+
+
+
+def test_rocket_reports_closest_approach_on_a_miss():
+    world = _make_world(2, scene="flat")
+    system = _rocket_system(world)
+    _place(world, 0, (0.0, 0.0), 0.0)
+    _place(world, 1, (8.0, 3.0), 0.0)  # 3 m beside the line of fire
+    system.fire(world.data, 0, az=0.0, el=0.0)
+    for _ in range(100):
+        _fly(world, system, 0.01)
+        if not system.rockets:
+            break
+    misses = [e for e in system.pop_events() if e["type"] == "miss"]
+    assert len(misses) == 1 and misses[0]["car"] == 0
+    assert 2.5 < misses[0]["closest"] < 3.5
+    assert not system.is_dead(1)
+
+
+def test_versus_near_miss_is_rewarded():
+    from robosim.envs.versus_env import NEAR_MISS_BONUS
+
+    env = _versus_env(opponents=1, scene="racetrack:obstacles=0,straight=14")
+    env.reset(seed=0)
+    _park_on_straight(env, [(0, 2.0), (1, 10.0)])
+    # nudge the opponent 1 m sideways so a straight shot passes ~1 m from its chassis
+    adr = env.world.qpos_adrs[1]
+    env.world.data.qpos[adr + 1] += 2.6  # just outside the 2 m blast at closest approach
+    mujoco.mj_forward(env.world.model, env.world.data)
+    env.opp_model = _NoOpModel()
+    env._gunners[1] = None
+    fire = np.array([0.0, 0.0, 1.0, 0.0, _LEVEL], dtype=np.float32)
+    hold = np.array([0.0, 0.0, 0.0, 0.0, _LEVEL], dtype=np.float32)
+    total = env.step(fire)[1]
+    seen = None
+    for _ in range(30):
+        _, r, term, trunc, info = env.step(hold)
+        total += r
+        if "near_miss_m" in info:
+            seen = info["near_miss_m"]
+            break
+    assert seen is not None and 2.0 < seen < 4.0
+    assert not env.rockets.is_dead(1)
+    assert total > -1.0  # the near-miss bonus outweighs shot cost + time penalty
+
+
+def test_distill_aim_produces_loadable_warm_start(tmp_path):
+    import torch
+
+    pytest.importorskip("stable_baselines3")
+    from robosim.train.bc import distill_aim
+
+    out = distill_aim(
+        RALLY, str(tmp_path / "aim_init.pt"),
+        scene="racetrack:obstacles=0,straight=14", robot="racecar:max_speed=12,max_torque=1.2",
+        task="race:laps=2,lookahead=2.5", steps=150, epochs=2, opponents=2,
+        n_lidar_beams=48, lidar_fov_deg=360.0, lidar_max_range=12.0, max_episode_steps=100,
+    )
+    sd = torch.load(out, map_location="cpu")
+    assert sd["mlp_extractor.policy_net.0.weight"].shape == (64, 77)
+    assert sd["action_net.weight"].shape == (5, 64)
+    assert sd["log_std"].shape == (5,)
+    assert torch.allclose(sd["log_std"][2:], torch.full((3,), -1.0))
+
+
+def test_gunner_ignore_cooldown_reports_viable_shot_while_reloading():
+    from robosim.combat.gunner import ScriptedGunner
+
+    world = _make_world(2, scene="flat")
+    system = _rocket_system(world)
+    gunner = ScriptedGunner(gun_range=20.0, sigma_deg=0.0, rng=np.random.default_rng(0))
+    _place(world, 0, (0.0, 0.0), 0.0)
+    _place(world, 1, (10.0, 0.0), 0.0)
+    assert gunner.decide(system, world.data, 0) is not None
+    system.fire(world.data, 0, 0.0, 0.0)  # now reloading
+    assert gunner.decide(system, world.data, 0) is None
+    assert gunner.decide(system, world.data, 0, ignore_cooldown=True) is not None
+
+
+def test_evaluate_versus_scorecard_keys(tmp_path):
+    pytest.importorskip("stable_baselines3")
+    from robosim.train.evaluate import evaluate_versus
+
+    out = evaluate_versus(
+        RALLY, RALLY, scene="racetrack:obstacles=0,straight=14",
+        robot="racecar:max_speed=12,max_torque=1.2", task="race:laps=2,lookahead=2.5",
+        episodes=1, seed=0, deterministic=True, opponents=1, max_steps=40,
+    )
+    for k in ("kills_per_episode", "deaths_per_episode", "self_kills_per_episode",
+              "hit_rate", "win_rate", "crash_rate", "mean_progress_m"):
+        assert k in out
+    assert out["episodes"] == 1
