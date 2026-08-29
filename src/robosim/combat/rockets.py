@@ -25,6 +25,9 @@ COOLDOWN_S = 2.0  # reload
 ARMING_M = 0.5  # rocket ignores its own launcher for this much flight
 MIN_ARM_M = 4.0  # safety arming distance: an impact closer than this is a dud (no blast),
 #                  like a real RPG/ATGM fuze — point-blank shots can't be suicide
+PROX_FUZE_M = 1.0  # proximity fuze: once armed, detonate when passing this close to a rival.
+#                   A level 40 m/s rocket drops 3 cm in 5 m and a chassis is 8 cm thick —
+#                   without this, a 0.5 deg elevation error is an overflight.
 MAX_FLIGHT_S = 4.0  # self-destruct (no blast) after this
 LAUNCH_HEIGHT = 0.2  # m above chassis center, clears cabin and wheels
 MAX_ELEVATION = np.deg2rad(20.0)  # gimbal limit: 40 m/s still reaches 105 m at 20 deg
@@ -213,11 +216,11 @@ class RocketSystem:
             hit = self._first_hit(model, data, start, direction, seg_len, rocket)
             if hit is not None:
                 rocket.alive = False
-                self._track_closest(data, rocket, hit)
                 if rocket.traveled + float(np.linalg.norm(hit - start)) < MIN_ARM_M:
                     self._events.append({"type": "dud", "car": rocket.owner})
-                    self._miss(rocket)
+                    self._miss(rocket)  # closest stays inf: nothing was killable
                     return  # fuze not armed yet: no blast
+                self._track_closest(data, rocket, hit)
                 blast = self.detonate(model, data, hit, rocket.owner)
                 if not any(v != rocket.owner for v in blast.victims):
                     self._miss(rocket)
@@ -226,18 +229,34 @@ class RocketSystem:
         rocket.traveled += seg_len
         rocket.age += dt
         rocket.trail.append(rocket.pos.copy())
-        self._track_closest(data, rocket, rocket.pos)
+        if rocket.traveled < MIN_ARM_M:
+            return  # unarmed: neither the fuze nor the near-miss record sees rivals
+        near = self._track_closest(data, rocket, rocket.pos)
+        if near <= PROX_FUZE_M:
+            rocket.alive = False  # proximity fuze
+            blast = self.detonate(model, data, rocket.pos, rocket.owner)
+            if not any(v != rocket.owner for v in blast.victims):
+                self._miss(rocket)
+            return
         if rocket.age >= MAX_FLIGHT_S:
             rocket.alive = False  # fizzles mid-air, no blast
             self._miss(rocket)
 
-    def _track_closest(self, data, rocket: Rocket, point) -> None:
+    # NOTE: MAX_FLIGHT_S is checked after the arming gate above; a rocket cannot be
+    # unarmed at 4 s of flight (4 m at 40 m/s takes 0.1 s), so nothing is skipped.
+
+    def _track_closest(self, data, rocket: Rocket, point) -> float:
+        """Update the rocket's closest approach; return the distance to the nearest live
+        rival from `point` (inf if none)."""
+        near = float("inf")
         for i in range(self.n_cars):
             if i == rocket.owner or self.is_dead(i):
                 continue
             d = float(np.linalg.norm(self.car_pos(data, i) - point))
+            near = min(near, d)
             if d < rocket.closest:
                 rocket.closest = d
+        return near
 
     def _miss(self, rocket: Rocket) -> None:
         """A rocket that killed no rival: report how close it came (reward shaping)."""

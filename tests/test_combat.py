@@ -726,3 +726,49 @@ def test_evaluate_versus_scorecard_keys(tmp_path):
               "hit_rate", "win_rate", "crash_rate", "mean_progress_m"):
         assert k in out
     assert out["episodes"] == 1
+
+
+def test_proximity_fuze_detonates_on_near_overflight():
+    """A rocket passing ~0.5 m over a rival's roof (a certain miss on geometry alone)
+    detonates by proximity and kills it — real anti-vehicle rockets fuze this way."""
+    world = _make_world(2, scene="flat")
+    system = _rocket_system(world)
+    _place(world, 0, (0.0, 0.0), 0.0)
+    _place(world, 1, (8.0, 0.0), 0.0)
+    system.fire(world.data, 0, az=0.0, el=np.deg2rad(2.5))  # rises ~0.35 m by 8 m
+    for _ in range(100):
+        _fly(world, system, 0.01)
+        if system.is_dead(1) or not system.rockets:
+            break
+    assert system.is_dead(1) and not system.is_dead(0)
+    ev = system.pop_events()
+    assert {"type": "kill", "shooter": 0, "victim": 1} in ev
+
+
+def test_proximity_fuze_respects_arming_distance():
+    world = _make_world(2, scene="flat")
+    system = _rocket_system(world)
+    _place(world, 0, (0.0, 0.0), 0.0)
+    _place(world, 1, (2.5, 0.6), 0.0)  # inside arming distance, 0.6 m beside the line
+    system.fire(world.data, 0, az=0.0, el=np.deg2rad(3.0))
+    _fly(world, system, 0.1)  # 4 m of flight: passes the rival unarmed
+    assert not system.is_dead(1) and not system.is_dead(0)
+
+
+def test_near_miss_only_counts_once_armed():
+    """A rival passed at 0.5 m inside the arming distance is not a near miss (no kill was
+    ever possible there), so it must not earn shaping reward."""
+    world = _make_world(3, scene="flat")
+    system = _rocket_system(world)
+    _place(world, 0, (0.0, 0.0), 0.0)
+    _place(world, 1, (1.0, 0.3), 0.0)  # unarmed zone, passed at ~0.3 m (3 m away by arming)
+    _place(world, 2, (7.0, 2.5), 0.0)  # armed zone, passed at ~2.5 m
+    system.fire(world.data, 0, az=0.0, el=0.0)  # level: lands ~8 m out, inside the plane
+    for _ in range(100):
+        _fly(world, system, 0.01)
+        if not system.rockets:
+            break
+    misses = [e for e in system.pop_events() if e["type"] == "miss"]
+    assert len(misses) == 1
+    assert 2.3 < misses[0]["closest"] < 2.8  # the armed-zone rival, not the 0.3 m pass
+    assert not system.is_dead(1) and not system.is_dead(2)

@@ -355,7 +355,9 @@ parabola: range = v^2 sin(2 el) / g, ~1.8 deg of elevation for a 10 m shot; laun
 depress to -15 deg for close targets), detonate on the first thing they touch, and
 destroy every car within 2 m — the shooter included. Like a real RPG fuze, a rocket only
 ARMS after 4 m of flight: anything it hits sooner is a dud (no blast), so point-blank
-shots can't be suicide. A destroyed car turns charcoal, tumbles, and is rebuilt by the
+shots can't be suicide. Once armed it carries a PROXIMITY fuze (1 m): a level 40 m/s
+rocket drops 3 cm in 5 m and a chassis is 8 cm thick, so without it a 0.5 deg elevation
+error is an overflight and nobody could ever be hit. A destroyed car turns charcoal, tumbles, and is rebuilt by the
 marshal after 4 s. Kills/deaths show on the leaderboard.
 
 Watch it today with any checkpoint (weaponless brains get a scripted intercept gunner

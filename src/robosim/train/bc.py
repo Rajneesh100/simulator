@@ -237,7 +237,12 @@ def distill_aim(
     X = torch.tensor(np.stack(X))
     Y = torch.tensor(np.stack(Y))
     M = torch.tensor(np.asarray(M, dtype=np.float32))
-    print(f"[distill-aim] {steps} samples: gunner fired on {int(M.sum())} steps, "
+    n_pos = float(M.sum())
+    # viable-shot steps are rare (a few % even with reload ignored): weight them so the
+    # fire head can't win by predicting "never" — the same trick as pos_weight in BCE
+    pos_weight = float(np.clip((len(M) - n_pos) / max(n_pos, 1.0), 1.0, 25.0))
+    print(f"[distill-aim] {steps} samples: shot viable on {int(n_pos)} steps "
+          f"({100 * n_pos / len(M):.1f}%, pos_weight {pos_weight:.1f}), "
           f"{kills} kills by the teacher+gunner")
 
     sd = expand_policy_state_dict(
@@ -258,8 +263,9 @@ def distill_aim(
             idx = perm[i : i + 256]
             pred = student(X[idx])
             drive_loss = ((pred[:, :2] - Y[idx, :2]) ** 2).mean()
-            fire_loss = ((pred[:, 2] - Y[idx, 2]) ** 2).mean()
             m = M[idx]
+            w = 1.0 + (pos_weight - 1.0) * m
+            fire_loss = (w * (pred[:, 2] - Y[idx, 2]) ** 2).sum() / w.sum()
             aim_err = ((pred[:, 3:5] - Y[idx, 3:5]) ** 2).sum(dim=1)
             aim_loss = (aim_err * m).sum() / m.sum().clamp(min=1.0)
             loss = drive_loss + fire_loss + 2.0 * aim_loss

@@ -466,4 +466,19 @@ observation from this same function so the real robot can emit an identical vect
   -10..+20 deg (105 m reach — the old 45 deg cap was 80% useless range), fire bias 0
   (explore shooting), new-dim log_std -1. Race-mode gotcha that compounded it: the user's
   scene string omitted `obstacles=0`, so rally6 (trained without obstacles) met 6 blobs.
+- **2026-08-30 — Making the warm start actually shoot took four evidence-driven fixes.**
+  Each verified by a deterministic 60 s rollout of the distilled net vs 2 rally5 gunners:
+  (1) fire labels must ignore reload — the gunner returns None for 2 s after each shot,
+  so "did it fire" was +1 on 0.4% of steps and the head learned never (fire-wish 0.00);
+  label = "is a shot viable now" (`decide(..., ignore_cooldown=True)`). (2) Even then
+  positives are ~3%: class-balance the fire loss (pos_weight = neg/pos capped at 25) and
+  record with 4 opponents. Result: fires 16-23x/min, aim level — but 0 kills with closest
+  approaches 0.2-1.0 m: (3) overflight — the rocket launches 0.2 m above the chassis and
+  barely drops; hitting an 8 cm slab needs 0.5 deg precision. PROX_FUZE_M = 1.0 m
+  (real anti-vehicle rockets). (4) The remaining sub-metre "misses" were passes INSIDE
+  the 4 m arming zone, and near-miss shaping was paying max bonus for them — closest
+  approach now only records once armed, so point-blank spraying earns nothing. After
+  all four: warm start scores kills before any PPO step. Lesson: with a needle-in-
+  haystack reward, verify each link (labels -> fires -> arms -> fuzes -> credit) with
+  its own measurement; every link here was silently broken.
 - (Further decisions get appended here as they're made — newest at the bottom.)
