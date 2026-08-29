@@ -105,6 +105,8 @@ def run_train(
     max_episode_steps: int = 500,
     versus_checkpoint: str | None = None,
     versus_opponents: int = 2,
+    firearms: str = "none",
+    rocket_speed: float = 40.0,
 ) -> Path:
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -124,8 +126,12 @@ def run_train(
         lidar_fov_deg=lidar_fov_deg,
         lidar_max_range=lidar_max_range,
         max_episode_steps=max_episode_steps,
+        firearms=firearms,
+        rocket_speed=rocket_speed,
     )
     env_cls = RoboSimEnv
+    if firearms != "none" and not versus_checkpoint:
+        raise ValueError("--firearms needs opponents to shoot: add --versus <checkpoint>")
     if versus_checkpoint:
         from robosim.envs.versus_env import VersusRaceEnv
 
@@ -136,6 +142,9 @@ def run_train(
         env_kwargs["opponents"] = versus_opponents
         print(f"[train] VERSUS mode: learner races {versus_opponents} frozen opponents "
               f"from {versus_checkpoint}")
+        if firearms != "none":
+            print(f"[train] FIREARMS: {firearms} at {rocket_speed} m/s — "
+                  "opponents use the scripted gunner")
     vec_cls = SubprocVecEnv if n_envs > 1 else DummyVecEnv
     try:
         vec_env = make_vec_env(
@@ -196,6 +205,17 @@ def run_train(
     if bc_init:
         try:
             state_dict = torch.load(bc_init, map_location="cpu")
+            target = model.policy.state_dict()
+            key_in = "mlp_extractor.policy_net.0.weight"
+            if key_in in state_dict and key_in in target and "action_net.weight" in state_dict:
+                extra_obs = target[key_in].shape[1] - state_dict[key_in].shape[1]
+                extra_act = (target["action_net.weight"].shape[0]
+                             - state_dict["action_net.weight"].shape[0])
+                if extra_obs > 0 or extra_act > 0:
+                    from robosim.train.bc import expand_policy_state_dict
+
+                    state_dict = expand_policy_state_dict(state_dict, extra_obs, extra_act)
+                    print(f"[train] expanded bc_init by +{extra_obs} obs / +{extra_act} actions")
             model.policy.load_state_dict(state_dict, strict=False)
             print(f"[train] loaded BC-pretrained weights from {bc_init}")
         except Exception as e:
@@ -235,6 +255,8 @@ def run_train(
         "max_episode_steps": max_episode_steps,
         "versus_checkpoint": versus_checkpoint,
         "versus_opponents": versus_opponents if versus_checkpoint else None,
+        "firearms": firearms,
+        "rocket_speed": rocket_speed,
         "domain_randomization": domain_randomization.to_dict() if domain_randomization else None,
         "bc_init": bc_init,
         "curriculum": curriculum,

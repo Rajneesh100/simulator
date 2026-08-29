@@ -127,3 +127,34 @@ def generate_scripted_demo(
     np.savez(out.with_suffix(".npz"), obs=np.stack(all_obs), actions=np.stack(all_actions))
     print(f"[bc] wrote {len(all_obs)} scripted-demo steps to {out.with_suffix('.npz')}")
     return out.with_suffix(".npz")
+
+
+def expand_policy_state_dict(sd: dict, extra_obs: int, extra_act: int,
+                             fire_bias: float = -1.0) -> dict:
+    """Grow an SB3 MlpPolicy state dict to a wider obs/action space without changing
+    what it computes on the old inputs: new input columns get zero weight (the combat
+    block is ignored until learned), new action rows get zero weight, bias `fire_bias`
+    for the fire channel (stays holstered) and 0 for the aim channels, and log_std 0
+    (unit exploration) for the new rows. Used to warm-start rally6 from rally5.
+
+    The new obs columns must be APPENDED to the old layout (they are: prev_action[2:]
+    and the combat block both come after every column the old policy read)."""
+    import torch
+
+    out = dict(sd)
+    for key in ("mlp_extractor.policy_net.0.weight", "mlp_extractor.value_net.0.weight"):
+        if key in out and extra_obs > 0:
+            w = out[key]
+            out[key] = torch.cat([w, torch.zeros(w.shape[0], extra_obs, dtype=w.dtype)], dim=1)
+    if extra_act > 0:
+        w = out["action_net.weight"]
+        out["action_net.weight"] = torch.cat(
+            [w, torch.zeros(extra_act, w.shape[1], dtype=w.dtype)], dim=0)
+        b = out["action_net.bias"]
+        new_b = torch.zeros(extra_act, dtype=b.dtype)
+        new_b[0] = fire_bias
+        out["action_net.bias"] = torch.cat([b, new_b], dim=0)
+        if "log_std" in out:
+            ls = out["log_std"]
+            out["log_std"] = torch.cat([ls, torch.zeros(extra_act, dtype=ls.dtype)], dim=0)
+    return out
