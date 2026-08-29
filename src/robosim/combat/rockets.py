@@ -25,9 +25,11 @@ COOLDOWN_S = 2.0  # reload
 ARMING_M = 0.5  # rocket ignores its own launcher for this much flight
 MIN_ARM_M = 4.0  # safety arming distance: an impact closer than this is a dud (no blast),
 #                  like a real RPG/ATGM fuze — point-blank shots can't be suicide
-PROX_FUZE_M = 1.0  # proximity fuze: once armed, detonate when passing this close to a rival.
+PROX_FUZE_M = 1.8  # proximity fuze: once armed, detonate when passing this close to a rival.
 #                   A level 40 m/s rocket drops 3 cm in 5 m and a chassis is 8 cm thick —
-#                   without this, a 0.5 deg elevation error is an overflight.
+#                   without this, a 0.5 deg elevation error is an overflight. Matched to
+#                   the 2 m blast radius: at 1.0 m, 37% of armed misses fell in the 1-2 m
+#                   dead band — inside the lethal radius yet never detonating.
 MAX_FLIGHT_S = 4.0  # self-destruct (no blast) after this
 LAUNCH_HEIGHT = 0.2  # m above chassis center, clears cabin and wheels
 MAX_ELEVATION = np.deg2rad(20.0)  # gimbal limit: 40 m/s still reaches 105 m at 20 deg

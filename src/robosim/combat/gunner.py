@@ -67,7 +67,7 @@ class ScriptedGunner:
     """Fires at the nearest live rival within `gun_range` whenever an intercept exists
     and the predicted impact is outside the shooter's own blast radius."""
 
-    def __init__(self, gun_range: float = 20.0, sigma_deg: float = 2.0,
+    def __init__(self, gun_range: float = 40.0, sigma_deg: float = 2.0,
                  rng: np.random.Generator | None = None):
         self.gun_range = float(gun_range)
         self.sigma = np.deg2rad(sigma_deg)

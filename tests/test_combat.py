@@ -772,3 +772,21 @@ def test_near_miss_only_counts_once_armed():
     assert len(misses) == 1
     assert 2.3 < misses[0]["closest"] < 2.8  # the armed-zone rival, not the 0.3 m pass
     assert not system.is_dead(1) and not system.is_dead(2)
+
+
+def test_proximity_fuze_is_matched_to_blast_radius():
+    """A pass at 1.5 m — inside the 2 m lethal radius — must detonate and kill, not
+    fly on as a 'near miss' (the 1-2 m dead band that starved rally6 of kills)."""
+    from robosim.combat.rockets import BLAST_RADIUS, PROX_FUZE_M
+
+    assert 1.5 <= PROX_FUZE_M < BLAST_RADIUS
+    world = _make_world(2, scene="flat")
+    system = _rocket_system(world)
+    _place(world, 0, (0.0, 0.0), 0.0)
+    _place(world, 1, (8.0, 1.5), 0.0)  # 1.5 m beside the line of fire
+    system.fire(world.data, 0, az=0.0, el=0.0)
+    for _ in range(100):
+        _fly(world, system, 0.01)
+        if system.is_dead(1) or not system.rockets:
+            break
+    assert system.is_dead(1) and not system.is_dead(0)
