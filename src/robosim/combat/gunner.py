@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from robosim.combat.rockets import LAUNCH_HEIGHT, MAX_ELEVATION, RocketSystem
+from robosim.combat.rockets import LAUNCH_HEIGHT, MAX_ELEVATION, MIN_ELEVATION, RocketSystem
 
 
 def solve_intercept(
@@ -53,7 +53,7 @@ def solve_intercept(
     m = muzzle(t)
     horiz = float(np.hypot(m[0], m[1]))
     el = float(np.arctan2(m[2], horiz))
-    if el < 0.0 or el > MAX_ELEVATION:
+    if el < MIN_ELEVATION or el > MAX_ELEVATION:
         return None
     heading = float(np.arctan2(m[1], m[0]))
     return heading, el, t
@@ -75,30 +75,33 @@ class ScriptedGunner:
         sp = system.car_pos(data, shooter) + np.array([0.0, 0.0, LAUNCH_HEIGHT])
         sv = system.car_vel(data, shooter)
         yaw = system.car_yaw(data, shooter)
-        best = None
+        my_pos = system.car_pos(data, shooter)
+        candidates = []
         for i in range(system.n_cars):
             if i == shooter or system.is_dead(i):
                 continue
             tp = system.car_pos(data, i)
             dist = float(np.linalg.norm(tp - sp))
-            if dist > self.gun_range:
+            if dist <= self.gun_range:
+                candidates.append((dist, i, tp))
+        candidates.sort(key=lambda c: c[0])
+        # nearest viable target: skip rivals with no ballistic solution and rivals so
+        # close the blast would take the shooter out too
+        for _, i, tp in candidates:
+            tv = system.car_vel(data, i)
+            sol = solve_intercept(sp, sv, tp, tv, system.rocket_speed, system.gravity)
+            if sol is None:
                 continue
-            if best is None or dist < best[0]:
-                best = (dist, i, tp)
-        if best is None:
+            heading, el, t = sol
+            impact = tp + tv * t
+            if np.linalg.norm(impact - my_pos) <= system.blast_radius + 0.5:
+                continue
+            break
+        else:
             return None
-        _, i, tp = best
-        tv = system.car_vel(data, i)
-        sol = solve_intercept(sp, sv, tp, tv, system.rocket_speed, system.gravity)
-        if sol is None:
-            return None
-        heading, el, t = sol
-        impact = tp + tv * t
-        if np.linalg.norm(impact - system.car_pos(data, shooter)) <= system.blast_radius + 0.5:
-            return None  # would take myself out
         az = heading - yaw
         az = float(np.arctan2(np.sin(az), np.cos(az)))  # wrap to [-pi, pi]
         if self.sigma > 0:
             az += float(self.rng.normal(0.0, self.sigma))
-            el = float(np.clip(el + self.rng.normal(0.0, self.sigma), 0.0, MAX_ELEVATION))
+            el = float(np.clip(el + self.rng.normal(0.0, self.sigma), MIN_ELEVATION, MAX_ELEVATION))
         return az, el

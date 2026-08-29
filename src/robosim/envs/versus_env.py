@@ -19,6 +19,15 @@ Observation/action spaces are identical to the solo race task, so a versus-train
 checkpoint plugs directly into `robosim play` / `robosim race` (including duels against
 the very champion it trained against). Lookahead settings come from the same task string
 (`--task race:lookahead=2.5,lookahead_time=0.6`), so run configs record them as usual.
+
+With `firearms="rocket"` every car carries a launcher (`combat/rockets.py`). The
+action grows to [throttle, steer, fire, az, el] and the observation gains the combat
+block from `envs/obs.py`. Reward adds KILL_BONUS per rival destroyed by the learner's
+rocket, SHOT_COST per launch, and DEATH_PENALTY + termination when the learner is
+destroyed — by any rocket, its own blast included. Opponents fire through a scripted
+intercept gunner (the frozen driver never held a launcher), so incoming fire exists to
+dodge. Destroyed opponents respawn like wrecked ones. The frozen opponents keep seeing
+the obs layout THEY trained with (`_opp_obs`: no combat block, 2-wide prev_action).
 """
 
 from __future__ import annotations
@@ -32,8 +41,10 @@ from gymnasium import spaces
 
 from robosim.core import physics
 from robosim.core.movers import derive_movers, update_movers
+from robosim.combat.gunner import ScriptedGunner
+from robosim.combat.rockets import RocketSystem, action_to_aim
 from robosim.core.world import _parse_scene_arg, build_multi_world
-from robosim.envs.obs import build_obs, obs_dim
+from robosim.envs.obs import build_obs, combat_block, obs_dim
 from robosim.envs.tasks.race import _point_at, _project
 from robosim.sensors.lidar import Lidar, body_subtree_ids
 
@@ -45,6 +56,11 @@ TAKEDOWN_WINDOW_S = 1.5
 WIN_BONUS = 40.0
 LOSE_PENALTY = 15.0
 MAX_DS_PER_STEP = 1.0
+KILL_BONUS = 15.0  # opponent destroyed by a rocket the learner fired
+DEATH_PENALTY = 20.0  # learner destroyed (any rocket, own blast included) -> episode over
+SHOT_COST = 0.3  # per launch, so it aims instead of spraying
+OPP_GUN_RANGE = 20.0
+OPP_AIM_SIGMA_DEG = 2.0
 
 OPP_STALL_SPEED = 0.12
 OPP_STALL_TRIGGER_S = 1.5
@@ -119,6 +135,8 @@ class VersusRaceEnv(gym.Env):
         lidar_max_range: float = 5.0,
         max_episode_steps: int = 1500,
         domain_randomization=None,  # accepted for train.py symmetry; not applied
+        firearms: str = "none",
+        rocket_speed: float = 40.0,
         render_mode: str | None = None,
     ):
         super().__init__()
@@ -164,10 +182,30 @@ class VersusRaceEnv(gym.Env):
                 pass
         self._all_car_geom_ids = set().union(*(c.geom_ids for c in self.cars))
 
-        action_dim = self.world.robots[0].action_dim()
+        self.firearms = firearms
+        self.rocket_speed = float(rocket_speed)
+        drive_dim = self.world.robots[0].action_dim()
+        self.drive_dim = drive_dim
+        action_dim = drive_dim + 3 if firearms == "rocket" else drive_dim
         self.action_space = spaces.Box(-1.0, 1.0, shape=(action_dim,), dtype=np.float32)
-        obs_size = obs_dim(n_lidar_beams, action_dim)
+        obs_size = obs_dim(n_lidar_beams, action_dim, combat=(firearms == "rocket"))
         self.observation_space = spaces.Box(-10.0, 10.0, shape=(obs_size,), dtype=np.float32)
+        self.learner.prev_action = np.zeros(action_dim, dtype=np.float32)
+
+        self.rockets: RocketSystem | None = None
+        self._gunners: list[ScriptedGunner | None] = [None] * len(self.cars)
+        if firearms == "rocket":
+            self.rockets = RocketSystem(
+                self.world.model,
+                [c.chassis_id for c in self.cars],
+                [c.body_ids for c in self.cars],
+                list(self.world.qvel_adrs),
+                rocket_speed=self.rocket_speed,
+            )
+            for c in self.cars[1:]:
+                self._gunners[c.index] = ScriptedGunner(OPP_GUN_RANGE, OPP_AIM_SIGMA_DEG)
+        elif firearms != "none":
+            raise ValueError(f"unknown firearms '{firearms}' (none | rocket)")
 
         self._steps_per_action = physics.physics_steps_per_control_step()
         self._control_dt = self.world.model.opt.timestep * self._steps_per_action
@@ -203,7 +241,36 @@ class VersusRaceEnv(gym.Env):
         if self.lookahead_time > 0:
             la = max(la, self._car_speed(car) * self.lookahead_time)
         goal = _point_at(self._pts, self._cum, self._total, car.s + la)
-        return build_obs(ranges, pos[:2], quat, goal, proprio, car.prev_action)
+        combat = None
+        if self.rockets is not None:
+            me_vel = self.world.car_velocity(car.index)[:2]
+            others = [
+                (self.world.car_pose(c.index)[0][:2], self.world.car_velocity(c.index)[:2])
+                for c in self.cars if c is not car and not self.rockets.is_dead(c.index)
+            ]
+            rockets = [(r.pos, r.vel) for r in self.rockets.rockets if r.owner != car.index]
+            combat = combat_block(
+                pos[:2], quat, me_vel, others, self.rockets.ready(car.index), rockets
+            )
+        return build_obs(ranges, pos[:2], quat, goal, proprio, car.prev_action, combat=combat)
+
+    def _opp_obs(self, car: _Car) -> np.ndarray:
+        """Observation in the FROZEN opponent's own layout (no combat block, drive-wide
+        prev_action) — a brain must see the obs it trained on."""
+        pos, quat = self.world.car_pose(car.index)
+        ranges = car.lidar.sense(
+            self.world.model, self.world.data,
+            exclude_body_id=car.chassis_id, exclude_body_ids=car.body_ids,
+            rng=self.np_random,
+        )
+        proprio = self.world.robots[car.index].read_proprio(
+            self.world.model, self.world.data, prefix=self.world.prefixes[car.index]
+        )
+        la = self.lookahead
+        if self.lookahead_time > 0:
+            la = max(la, self._car_speed(car) * self.lookahead_time)
+        goal = _point_at(self._pts, self._cum, self._total, car.s + la)
+        return build_obs(ranges, pos[:2], quat, goal, proprio, car.prev_action[: self.drive_dim])
 
     def _respawn(self, car: _Car) -> None:
         p = np.array(_point_at(self._pts, self._cum, self._total, car.s))
@@ -224,6 +291,8 @@ class VersusRaceEnv(gym.Env):
         car.no_progress_for = 0.0
         car.progress_anchor = car.progress
         car.wrecked_for = 0.0
+        if self.rockets is not None:
+            self.rockets.revive(car.index)
 
     def _update_progress(self, car: _Car) -> float:
         pos, _ = self.world.car_pose(car.index)
@@ -245,6 +314,12 @@ class VersusRaceEnv(gym.Env):
         super().reset(seed=seed)
         rng = self.np_random
         self.world.reset()
+        if self.rockets is not None:
+            self.rockets.reset()
+            self.rockets.rng = rng
+            for g in self._gunners:
+                if g is not None:
+                    g.rng = rng
         # shuffle grid slots: the learner must practice from the front AND the back
         perm = rng.permutation(len(self.cars))
         for car, slot in zip(self.cars, perm):
@@ -275,7 +350,7 @@ class VersusRaceEnv(gym.Env):
         return self._obs_for(self.learner), {}
 
     def _opponent_actions(self) -> list[np.ndarray]:
-        rows = [self._obs_for(c) for c in self.cars[1:]]
+        rows = [self._opp_obs(c) for c in self.cars[1:]]
         batch = np.stack(rows)
         if self.opp_recurrent:
             starts = np.array([self._opp_lstm is None] * len(rows))
@@ -286,7 +361,7 @@ class VersusRaceEnv(gym.Env):
             acts, _ = self.opp_model.predict(batch, deterministic=False)
         out = []
         for car, a in zip(self.cars[1:], acts):
-            a = np.asarray(a, dtype=np.float32)
+            a = np.asarray(a, dtype=np.float32)[: self.drive_dim].copy()
             a[0] *= car.aggression
             a = np.clip(a + self.np_random.normal(0, car.jitter, 2), -1, 1).astype(np.float32)
             # anti-stall reverse so opponents stay racy
@@ -329,16 +404,37 @@ class VersusRaceEnv(gym.Env):
     def step(self, action: np.ndarray):
         action = np.clip(np.asarray(action, dtype=np.float32), -1.0, 1.0)
         opp_actions = self._opponent_actions()
-        self.world.set_ctrl(0, self.world.robots[0].action_to_ctrl(action))
+        self.world.set_ctrl(0, self.world.robots[0].action_to_ctrl(action[: self.drive_dim]))
         self.learner.prev_action = action
         for car, a in zip(self.cars[1:], opp_actions):
             self.world.set_ctrl(car.index, self.world.robots[car.index].action_to_ctrl(a))
             car.prev_action = a
 
+        shots = 0
+        if self.rockets is not None:
+            if action[self.drive_dim] >= 0.5 and self.rockets.ready(0):
+                az, el = action_to_aim(action[self.drive_dim + 1], action[self.drive_dim + 2])
+                if self.rockets.fire(self.world.data, 0, az, el) is not None:
+                    shots += 1
+            for car in self.cars[1:]:
+                g = self._gunners[car.index]
+                if g is not None and not self.rockets.is_dead(car.index):
+                    aim = g.decide(self.rockets, self.world.data, car.index)
+                    if aim is not None:
+                        self.rockets.fire(self.world.data, car.index, *aim)
+            # destroyed cars coast: no drive
+            for car in self.cars:
+                if self.rockets.is_dead(car.index):
+                    self.world.set_ctrl(car.index, self.world.robots[car.index].action_to_ctrl(
+                        np.zeros(self.drive_dim, dtype=np.float32)))
+
+        sub_dt = self.world.model.opt.timestep
         for _ in range(self._steps_per_action):
             if self._movers:
                 update_movers(self.world.data, self._movers, self.world.data.time)
             mujoco.mj_step(self.world.model, self.world.data)
+            if self.rockets is not None:
+                self.rockets.step(self.world.model, self.world.data, sub_dt)
             self._learner_contacts()
 
         # learner progress + state
@@ -369,9 +465,10 @@ class VersusRaceEnv(gym.Env):
                 opp.no_progress_for += self._control_dt
             off_track = lateral > self._half_width + 0.4
 
+            destroyed = self.rockets is not None and self.rockets.is_dead(opp.index)
             newly_wrecked = (
                 opp.wrecked_for == 0.0
-                and (opp.flipped_for >= OPP_WRECK_FLIP_S or off_track
+                and (destroyed or opp.flipped_for >= OPP_WRECK_FLIP_S or off_track
                      or opp.no_progress_for >= OPP_NO_PROGRESS_S)
             )
             if newly_wrecked:
@@ -387,6 +484,26 @@ class VersusRaceEnv(gym.Env):
         if takedowns:
             info["takedowns"] = takedowns
 
+        if self.rockets is not None:
+            kills = 0
+            killed = False
+            for ev in self.rockets.pop_events():
+                if ev["type"] == "kill" and ev["shooter"] == 0:
+                    kills += 1
+                elif ev["type"] == "kill" and ev["victim"] == 0:
+                    killed = True
+                elif ev["type"] == "self_kill" and ev["car"] == 0:
+                    killed = True
+            reward += KILL_BONUS * kills - SHOT_COST * shots
+            if kills:
+                info["kills"] = kills
+            if shots:
+                info["shots"] = shots
+            if killed or self.rockets.is_dead(0):
+                reward -= DEATH_PENALTY
+                terminated = True
+                info["killed"] = True
+
         # overtakes: net position changes, signed
         behind_now = sum(1 for c in self.cars[1:] if c.progress <= self.learner.progress)
         reward += OVERTAKE_BONUS * (behind_now - self._rank_behind)
@@ -394,7 +511,7 @@ class VersusRaceEnv(gym.Env):
 
         # learner crash/flip: aggression must be aimed — walls end your race
         _, lquat = self.world.car_pose(self.learner.index)
-        if self._learner_wall_crash() or _uprightness(lquat) < 0.3:
+        if not terminated and (self._learner_wall_crash() or _uprightness(lquat) < 0.3):
             reward -= WALL_CRASH_PENALTY
             terminated = True
             info["crashed"] = True

@@ -61,9 +61,13 @@ class RoboSimEnv(gym.Env):
         lidar_max_range: float = 5.0,
         max_episode_steps: int = 500,
         domain_randomization: DomainRandomization | None = None,
+        firearms: str = "none",
+        rocket_speed: float = 40.0,
         render_mode: str | None = None,
     ):
         super().__init__()
+        if firearms != "none":
+            raise ValueError("--firearms needs opponents to shoot: train with --versus")
         self.scene_arg = scene
         self.robot_arg = robot
         self.task_arg = task

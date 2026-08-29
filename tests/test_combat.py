@@ -45,7 +45,7 @@ def _fly(world, system, seconds):
 
 
 def test_aim_direction_and_action_mapping():
-    from robosim.combat.rockets import action_to_aim, aim_direction
+    from robosim.combat.rockets import MIN_ELEVATION, action_to_aim, aim_direction
 
     d = aim_direction(0.0, 0.0, 0.0)
     assert np.allclose(d, [1, 0, 0])
@@ -54,7 +54,8 @@ def test_aim_direction_and_action_mapping():
     d = aim_direction(0.0, 0.0, np.pi / 4)
     assert np.isclose(d[2], np.sin(np.pi / 4)) and np.isclose(np.linalg.norm(d), 1.0)
     az, el = action_to_aim(-1.0, -1.0)
-    assert np.isclose(az, -np.pi) and np.isclose(el, 0.0)
+    assert np.isclose(az, -np.pi) and np.isclose(el, MIN_ELEVATION)
+    assert np.isclose(action_to_aim(0.0, -0.5)[1], 0.0)  # -0.5 is level
     az, el = action_to_aim(0.5, 1.0)
     assert np.isclose(az, np.pi / 2) and np.isclose(el, np.pi / 4)
 
@@ -175,7 +176,7 @@ def test_solve_intercept_hits_crossing_target():
     sol = solve_intercept(shooter_pos, shooter_vel, target_pos, target_vel, 40.0, G)
     assert sol is not None
     heading, el, t = sol
-    assert 0.0 <= el <= np.pi / 4 and 0.1 < t < 1.0
+    assert -np.pi / 12 <= el <= np.pi / 4 and 0.1 < t < 1.0
     vel = shooter_vel + 40.0 * aim_direction(0.0, heading, el)
     rocket_at_t = _simulate_flight(shooter_pos, vel, G, t)
     target_at_t = target_pos + target_vel * t
@@ -273,3 +274,119 @@ def test_build_obs_appends_combat_block():
     with_combat = build_obs(np.ones(4, np.float32), np.zeros(2), np.array([1.0, 0, 0, 0]),
                             (1.0, 0.0), np.zeros(5), np.zeros(5), combat=np.zeros(16, np.float32))
     assert with_combat.shape == (4 + 3 + 5 + 5 + 16,)
+
+
+RALLY = "runs/rally3/best_model.zip"
+
+
+class _NoOpModel:
+    def predict(self, batch, deterministic=False, **kw):
+        return np.zeros((len(batch), 2), dtype=np.float32), None
+
+
+def _versus_env(**kw):
+    pytest.importorskip("stable_baselines3")
+    from robosim.envs.versus_env import VersusRaceEnv
+
+    base = dict(
+        scene="racetrack:obstacles=0", robot="racecar:max_speed=12,max_torque=1.2",
+        task="race:laps=2,lookahead=2.5", opponent_checkpoint=RALLY, opponents=2,
+        n_lidar_beams=48, lidar_fov_deg=360.0, lidar_max_range=12.0,
+        max_episode_steps=100, firearms="rocket",
+    )
+    base.update(kw)
+    return VersusRaceEnv(**base)
+
+
+def test_versus_firearms_spaces_and_check_env():
+    from gymnasium.utils.env_checker import check_env
+
+    env = _versus_env()
+    assert env.action_space.shape == (5,)
+    assert env.observation_space.shape == (48 + 3 + 2 + 3 + 5 + 16,)
+    check_env(env, skip_render_check=True)
+
+
+def test_versus_without_firearms_unchanged():
+    env = _versus_env(firearms="none")
+    assert env.action_space.shape == (2,)
+    assert env.observation_space.shape == (58,)
+    assert env.rockets is None
+
+
+def _park_on_straight(env, placements):
+    """Teleport cars onto the centerline of the long straight: placements =
+    [(car_index, arclength_s), ...], all facing along the track, stationary."""
+    from robosim.envs.tasks.race import _point_at
+
+    for i, s in placements:
+        p0 = np.array(_point_at(env._pts, env._cum, env._total, s))
+        p1 = np.array(_point_at(env._pts, env._cum, env._total, s + 0.5))
+        yaw = float(np.arctan2(*(p1 - p0)[::-1]))
+        adr = env.world.qpos_adrs[i]
+        env.world.data.qpos[adr : adr + 2] = p0
+        env.world.data.qpos[adr + 3 : adr + 7] = [np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)]
+        env.world.data.qvel[env.world.qvel_adrs[i] : env.world.qvel_adrs[i] + 6] = 0.0
+    mujoco.mj_forward(env.world.model, env.world.data)
+
+
+def test_versus_learner_kill_reward_and_shot_cost():
+    from robosim.envs.versus_env import KILL_BONUS, SHOT_COST
+
+    env = _versus_env(opponents=1, scene="racetrack:obstacles=0,straight=14")
+    env.reset(seed=0)
+    _park_on_straight(env, [(0, 2.0), (1, 10.0)])  # opponent 8 m straight ahead
+    env.opp_model = _NoOpModel()  # opponent sits still
+    env._gunners[1] = None  # and does not shoot back
+    fire = np.array([0.0, 0.0, 1.0, 0.0, -0.5], dtype=np.float32)  # fire, az 0, el 0
+    hold = np.array([0.0, 0.0, 0.0, 0.0, -0.5], dtype=np.float32)
+    _, r0, *_ = env.step(fire)
+    total = r0
+    killed = False
+    for _ in range(20):  # 1 s of flight
+        _, r, term, trunc, info = env.step(hold)
+        total += r
+        if info.get("kills"):
+            killed = True
+            break
+    assert killed and env.rockets.is_dead(1)
+    assert total > KILL_BONUS - SHOT_COST - 2.0  # progress/time terms are small here
+
+
+def test_versus_learner_death_terminates_with_penalty():
+    from robosim.envs.versus_env import DEATH_PENALTY
+
+    env = _versus_env(opponents=1)
+    env.reset(seed=0)
+    pos = env.world.car_pose(0)[0]
+    env.rockets.detonate(env.world.model, env.world.data, pos, owner=1)
+    _, r, term, trunc, info = env.step(np.zeros(5, dtype=np.float32))
+    assert term and info.get("killed") is True
+    assert r <= -DEATH_PENALTY + 1.0
+
+
+def test_versus_opponents_shoot_and_respawn():
+    """Scripted gunners on the frozen opponents put rockets in the air — and a
+    learner sitting still 10 m up the straight gets destroyed by them."""
+    env = _versus_env(opponents=2, scene="racetrack:obstacles=0,straight=14")
+    env.reset(seed=1)
+    _park_on_straight(env, [(1, 1.0), (2, 2.0), (0, 12.0)])
+    env.opp_model = _NoOpModel()  # opponents only shoot, no driving
+    hold = np.array([0.0, 0.0, 0.0, 0.0, -0.5], np.float32)
+    shots, killed = 0, False
+    for _ in range(100):
+        _, _, term, trunc, info = env.step(hold)
+        shots = max(shots, sum(L.shots for L in env.rockets.launchers[1:]))
+        if info.get("killed"):
+            killed = True
+        if term or trunc:
+            break
+    assert shots >= 1
+    assert killed and term
+
+
+def test_base_env_rejects_firearms():
+    from robosim.envs.base_env import RoboSimEnv
+
+    with pytest.raises(ValueError):
+        RoboSimEnv(scene="flat", robot="racecar", task="race", firearms="rocket")

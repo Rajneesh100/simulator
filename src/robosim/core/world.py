@@ -106,6 +106,11 @@ class MultiWorld:
         adr = self.qvel_adrs[i]
         return float(np.hypot(self.data.qvel[adr], self.data.qvel[adr + 1]))
 
+    def car_velocity(self, i: int) -> np.ndarray:
+        """World-frame linear velocity of car i's chassis (free-joint qvel)."""
+        adr = self.qvel_adrs[i]
+        return self.data.qvel[adr : adr + 3].copy()
+
     def set_ctrl(self, i: int, ctrl_map: dict[str, float]) -> None:
         for name, value in ctrl_map.items():
             self.data.actuator(self.prefixes[i] + name).ctrl[0] = value

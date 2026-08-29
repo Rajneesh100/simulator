@@ -26,6 +26,7 @@ ARMING_M = 0.5  # rocket ignores its own launcher for this much flight
 MAX_FLIGHT_S = 4.0  # self-destruct (no blast) after this
 LAUNCH_HEIGHT = 0.2  # m above chassis center, clears cabin and wheels
 MAX_ELEVATION = np.pi / 4  # low-arc family only
+MIN_ELEVATION = -np.pi / 12  # 15 deg of depression: close targets sit below the launcher
 TRAIL_LEN = 40  # substep positions kept for the exhaust animation
 KILL_IMPULSE_UP = 4.0  # m/s added to a destroyed car
 KILL_IMPULSE_RADIAL = 3.0
@@ -47,9 +48,11 @@ def aim_direction(yaw: float, az: float, el: float) -> np.ndarray:
 
 
 def action_to_aim(az_cmd: float, el_cmd: float) -> tuple[float, float]:
-    """Policy action -> angles: az [-1,1] -> [-pi, pi], el [-1,1] -> [0, MAX_ELEVATION]."""
+    """Policy action -> angles: az [-1,1] -> [-pi, pi],
+    el [-1,1] -> [MIN_ELEVATION, MAX_ELEVATION] (el_cmd = -0.5 is level)."""
     az = float(np.clip(az_cmd, -1.0, 1.0)) * np.pi
-    el = (float(np.clip(el_cmd, -1.0, 1.0)) + 1.0) / 2.0 * MAX_ELEVATION
+    frac = (float(np.clip(el_cmd, -1.0, 1.0)) + 1.0) / 2.0
+    el = MIN_ELEVATION + frac * (MAX_ELEVATION - MIN_ELEVATION)
     return az, el
 
 
@@ -159,7 +162,7 @@ class RocketSystem:
         """Launch from car i if ready. `az` is relative to the car's heading."""
         if not self.ready(i):
             return None
-        el = float(np.clip(el, 0.0, MAX_ELEVATION))
+        el = float(np.clip(el, MIN_ELEVATION, MAX_ELEVATION))
         direction = aim_direction(self.car_yaw(data, i), az, el)
         pos = self.car_pos(data, i) + np.array([0.0, 0.0, LAUNCH_HEIGHT])
         vel = self.car_vel(data, i) + self.rocket_speed * direction
