@@ -222,3 +222,54 @@ def test_scripted_gunner_fires_at_target_in_range_and_holds_at_point_blank():
     assert gunner.decide(system, world.data, 0) is None
     _place(world, 1, (40.0, 0.0), 0.0)  # beyond gun range
     assert gunner.decide(system, world.data, 0) is None
+
+
+def test_combat_block_layout_and_ordering():
+    from robosim.envs.obs import COMBAT_DIM, combat_block, obs_dim
+
+    assert COMBAT_DIM == 16
+    assert obs_dim(48, 5, combat=True) == 48 + 3 + 2 + 3 + 5 + 16
+    assert obs_dim(48, 2) == 58  # unchanged default
+    me_xy = np.array([0.0, 0.0])
+    quat = np.array([1.0, 0.0, 0.0, 0.0])  # heading +x
+    me_vel = np.array([5.0, 0.0])
+    others = [
+        (np.array([10.0, 0.0]), np.array([0.0, 0.0])),  # ahead, 10 m, closing at 5
+        (np.array([0.0, 4.0]), np.array([0.0, 0.0])),  # left, 4 m
+    ]
+    block = combat_block(me_xy, quat, me_vel, others, weapon_ready=True, rockets=[])
+    assert block.shape == (16,)
+    # nearest first: the car 4 m to the left
+    assert np.isclose(block[0], 4.0 / 20.0)
+    assert np.isclose(block[1], 1.0, atol=1e-6) and np.isclose(block[2], 0.0, atol=1e-6)
+    # second: car ahead at 10 m, closing speed 5 m/s
+    assert np.isclose(block[4], 0.5) and np.isclose(block[6], 1.0, atol=1e-6)
+    assert np.isclose(block[7], 5.0 / 12.0)
+    # third slot empty
+    assert np.allclose(block[8:12], 0.0)
+    assert block[12] == 1.0  # weapon ready
+    assert np.allclose(block[13:16], 0.0)  # no threat
+
+
+def test_combat_block_threat_detection():
+    from robosim.envs.obs import combat_block
+
+    me_xy = np.array([0.0, 0.0])
+    quat = np.array([1.0, 0.0, 0.0, 0.0])
+    incoming = (np.array([6.0, 0.0, 0.3]), np.array([-40.0, 0.0, 0.0]))  # toward me
+    passing = (np.array([3.0, 0.0, 0.3]), np.array([0.0, 40.0, 0.0]))  # sideways
+    block = combat_block(me_xy, quat, np.zeros(2), [], False, rockets=[passing, incoming])
+    assert block[12] == 0.0
+    assert np.isclose(block[13], 6.0 / 20.0)
+    assert np.isclose(block[15], 1.0, atol=1e-6)  # bearing 0 -> cos 1
+
+
+def test_build_obs_appends_combat_block():
+    from robosim.envs.obs import build_obs
+
+    base = build_obs(np.ones(4, np.float32), np.zeros(2), np.array([1.0, 0, 0, 0]),
+                     (1.0, 0.0), np.zeros(5), np.zeros(2))
+    assert base.shape == (4 + 3 + 5 + 2,)
+    with_combat = build_obs(np.ones(4, np.float32), np.zeros(2), np.array([1.0, 0, 0, 0]),
+                            (1.0, 0.0), np.zeros(5), np.zeros(5), combat=np.zeros(16, np.float32))
+    assert with_combat.shape == (4 + 3 + 5 + 5 + 16,)
