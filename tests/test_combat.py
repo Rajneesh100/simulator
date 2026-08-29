@@ -390,3 +390,70 @@ def test_base_env_rejects_firearms():
 
     with pytest.raises(ValueError):
         RoboSimEnv(scene="flat", robot="racecar", task="race", firearms="rocket")
+
+
+def test_expand_policy_state_dict_preserves_original_outputs():
+    import torch
+
+    from robosim.train.bc import expand_policy_state_dict
+
+    torch.manual_seed(0)
+    obs_old, act_old, hidden = 58, 2, 64
+    sd = {
+        "mlp_extractor.policy_net.0.weight": torch.randn(hidden, obs_old),
+        "mlp_extractor.policy_net.0.bias": torch.randn(hidden),
+        "mlp_extractor.policy_net.2.weight": torch.randn(hidden, hidden),
+        "mlp_extractor.policy_net.2.bias": torch.randn(hidden),
+        "mlp_extractor.value_net.0.weight": torch.randn(hidden, obs_old),
+        "mlp_extractor.value_net.0.bias": torch.randn(hidden),
+        "mlp_extractor.value_net.2.weight": torch.randn(hidden, hidden),
+        "mlp_extractor.value_net.2.bias": torch.randn(hidden),
+        "action_net.weight": torch.randn(act_old, hidden),
+        "action_net.bias": torch.randn(act_old),
+        "value_net.weight": torch.randn(1, hidden),
+        "value_net.bias": torch.randn(1),
+        "log_std": torch.randn(act_old),
+    }
+    new = expand_policy_state_dict(sd, extra_obs=19, extra_act=3)
+    assert new["mlp_extractor.policy_net.0.weight"].shape == (hidden, 77)
+    assert new["mlp_extractor.value_net.0.weight"].shape == (hidden, 77)
+    assert new["action_net.weight"].shape == (5, hidden)
+    assert new["log_std"].shape == (5,)
+    assert new["action_net.bias"][2].item() == -1.0  # fire stays off until learned
+    obs = torch.randn(4, obs_old)
+    padded = torch.cat([obs, torch.zeros(4, 19)], dim=1)
+
+    def forward(s, x):
+        h = torch.tanh(x @ s["mlp_extractor.policy_net.0.weight"].T + s["mlp_extractor.policy_net.0.bias"])
+        h = torch.tanh(h @ s["mlp_extractor.policy_net.2.weight"].T + s["mlp_extractor.policy_net.2.bias"])
+        return h @ s["action_net.weight"].T + s["action_net.bias"]
+
+    assert torch.allclose(forward(sd, obs), forward(new, padded)[:, :2], atol=1e-6)
+
+
+def test_run_config_recovers_firearms(tmp_path):
+    import yaml
+
+    from robosim.train.run_config import env_kwargs_from_run
+
+    run = tmp_path / "rally6"
+    run.mkdir()
+    (run / "config.yaml").write_text(yaml.safe_dump({
+        "n_lidar_beams": 48, "firearms": "rocket", "rocket_speed": 35.0}))
+    ckpt = run / "best_model.zip"
+    ckpt.write_bytes(b"")
+    kw = env_kwargs_from_run(str(ckpt))
+    assert kw["firearms"] == "rocket" and kw["rocket_speed"] == 35.0
+    (run / "config.yaml").write_text(yaml.safe_dump({"n_lidar_beams": 48, "firearms": "none"}))
+    kw = env_kwargs_from_run(str(ckpt))
+    assert "firearms" not in kw and "rocket_speed" not in kw
+
+
+def test_race_module_exposes_firearms_option():
+    import inspect
+
+    from robosim.ui.race import run_race
+
+    params = inspect.signature(run_race).parameters
+    assert params["firearms"].default == "none"
+    assert params["rocket_speed"].default == 40.0

@@ -400,3 +400,77 @@ def save_screenshot(model, data, cam_src, out_dir: str = "runs/screenshots") -> 
     path = out / f"robosim_{time.strftime('%Y%m%d_%H%M%S')}.png"
     imageio.imwrite(path, frame)
     return path
+
+
+# ---------------------------------------------------------------------------
+# fire-fight: rockets, blasts, aim markers
+
+RGBA_BLAST_CORE = np.array([1.0, 0.55, 0.1, 0.9], dtype=np.float32)
+RGBA_BLAST_RING = np.array([1.0, 0.3, 0.05, 0.8], dtype=np.float32)
+RGBA_EXHAUST = np.array([1.0, 0.8, 0.4, 0.5], dtype=np.float32)
+BLAST_ANIM_S = 0.5
+ROCKET_LEN = 0.18
+ROCKET_RADIUS = 0.03
+
+
+def _add_capsule(scn, from_, to, rgba, radius) -> None:
+    if scn.ngeom >= scn.maxgeom:
+        return
+    g = scn.geoms[scn.ngeom]
+    mujoco.mjv_initGeom(
+        g, type=mujoco.mjtGeom.mjGEOM_CAPSULE, size=_ZERO3, pos=_ZERO3, mat=_EYE3,
+        rgba=np.asarray(rgba, dtype=np.float32),
+    )
+    mujoco.mjv_connector(
+        g, mujoco.mjtGeom.mjGEOM_CAPSULE, radius,
+        np.asarray(from_, dtype=np.float64), np.asarray(to, dtype=np.float64),
+    )
+    scn.ngeom += 1
+
+
+def draw_rocket(scn, rocket, rgba) -> None:
+    """Capsule body along the velocity in the owner's color, bright nose, and an
+    exhaust trail of fading spheres sampled from the last positions."""
+    v = np.asarray(rocket.vel, dtype=np.float64)
+    n = np.linalg.norm(v)
+    d = v / n if n > 1e-9 else np.array([1.0, 0.0, 0.0])
+    nose = np.asarray(rocket.pos, dtype=np.float64)
+    tail = nose - d * ROCKET_LEN
+    _add_capsule(scn, tail, nose, rgba, ROCKET_RADIUS)
+    _add_sphere(scn, nose, np.array([1.0, 1.0, 0.8, 1.0], dtype=np.float32), ROCKET_RADIUS * 1.2)
+    pts = list(rocket.trail)[::-5][1:9]  # every 5th substep, newest first, 8 puffs
+    for k, p in enumerate(pts):
+        fade = 1.0 - k / 8.0
+        rgba_k = RGBA_EXHAUST.copy()
+        rgba_k[3] *= fade
+        _add_sphere(scn, p, rgba_k, 0.02 + 0.03 * (1 - fade))
+
+
+def draw_blast(scn, blast, age_s: float, radius: float) -> None:
+    """Expanding translucent fireball (0.3 m -> radius, orange -> dark red, fading)
+    plus a flash ring on the ground marking the damage circle."""
+    if age_s < 0.0 or age_s > BLAST_ANIM_S:
+        return
+    f = age_s / BLAST_ANIM_S
+    r = 0.3 + (radius - 0.3) * f
+    rgba = RGBA_BLAST_CORE.copy()
+    rgba[1] *= 1.0 - 0.7 * f
+    rgba[3] *= 1.0 - f
+    _add_sphere(scn, blast.pos, rgba, r)
+    ring = RGBA_BLAST_RING.copy()
+    ring[3] *= 1.0 - f
+    z = float(blast.pos[2])
+    n_seg = 24
+    for k in range(n_seg):
+        a0 = 2 * np.pi * k / n_seg
+        a1 = 2 * np.pi * (k + 1) / n_seg
+        p0 = (blast.pos[0] + radius * np.cos(a0), blast.pos[1] + radius * np.sin(a0), z)
+        p1 = (blast.pos[0] + radius * np.cos(a1), blast.pos[1] + radius * np.sin(a1), z)
+        _add_line(scn, p0, p1, ring, 3.0)
+
+
+def draw_aim(scn, origin, direction, rgba) -> None:
+    """Short line showing a launcher's last firing direction (while reloading)."""
+    o = np.asarray(origin, dtype=np.float64)
+    d = np.asarray(direction, dtype=np.float64)
+    _add_line(scn, o, o + 0.8 * d, rgba, 2.0)

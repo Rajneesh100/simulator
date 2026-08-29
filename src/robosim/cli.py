@@ -92,6 +92,10 @@ def train(
         "reward adds overtakes, takedowns, and win/lose (racetrack scenes only)",
     ),
     versus_opponents: int = typer.Option(2, help="Opponent cars in versus mode"),
+    firearms: str = typer.Option("none", help="none | rocket — arm every car (versus mode only)"),
+    rocket_speed: float = typer.Option(
+        40.0, help="Rocket muzzle speed m/s (range = v^2 sin(2 el) / g)"
+    ),
 ):
     """Train a policy headless with SB3 PPO/SAC."""
     from robosim.envs.base_env import DomainRandomization
@@ -127,6 +131,8 @@ def train(
         max_episode_steps=max_episode_steps,
         versus_checkpoint=versus,
         versus_opponents=versus_opponents,
+        firearms=firearms,
+        rocket_speed=rocket_speed,
     )
 
 
@@ -173,6 +179,10 @@ def race(
     lookahead_time: float = typer.Option(
         0.0, help="Speed-scaled lookahead horizon (s) — match training's lookahead_time"
     ),
+    firearms: str = typer.Option(
+        "none", help="none | rocket — arm every car; weaponless checkpoints get a scripted gunner"
+    ),
+    rocket_speed: float = typer.Option(40.0, help="Rocket muzzle speed m/s (sets range)"),
 ):
     """Grid-start N copies of the same policy and race them to a winner."""
     _ensure_mjpython()
@@ -182,6 +192,7 @@ def race(
         checkpoint, scene=scene, robot=robot, cars=cars, laps=laps, speed=speed,
         deterministic=deterministic, seed=seed, variation=variation,
         lookahead=lookahead, lookahead_time=lookahead_time,
+        firearms=firearms, rocket_speed=rocket_speed,
     )
 
 

@@ -270,3 +270,30 @@ def test_screenshot_saves_png(tmp_path):
 
     img = imageio.imread(path)
     assert img.shape == (theme.OFFSCREEN_HEIGHT, theme.OFFSCREEN_WIDTH, 3)
+
+
+def test_rocket_and_blast_overlays_draw_headless():
+    import mujoco
+    import numpy as np
+
+    from robosim.combat.rockets import Blast, Rocket
+    from robosim.core.world import build_world
+    from robosim.ui import overlay
+
+    world = build_world("flat", "racecar")
+    scn = mujoco.MjvScene(world.model, maxgeom=2000)
+    scn.ngeom = 0
+    rocket = Rocket(owner=0, pos=np.array([1.0, 0.0, 0.5]), vel=np.array([40.0, 0.0, -1.0]))
+    for k in range(12):
+        rocket.trail.append(np.array([1.0 - 0.08 * k, 0.0, 0.5]))
+    overlay.draw_rocket(scn, rocket, (1.0, 0.2, 0.2, 0.9))
+    n_after_rocket = scn.ngeom
+    assert n_after_rocket >= 3  # body capsule + nose + trail
+    blast = Blast(pos=np.array([3.0, 0.0, 0.1]), owner=0, time=0.0, victims=[])
+    overlay.draw_blast(scn, blast, age_s=0.2, radius=2.0)
+    assert scn.ngeom > n_after_rocket
+    n_after_blast = scn.ngeom
+    overlay.draw_blast(scn, blast, age_s=0.9, radius=2.0)  # past the animation: no-op
+    assert scn.ngeom == n_after_blast
+    overlay.draw_aim(scn, np.array([0.0, 0.0, 0.3]), np.array([1.0, 0.0, 0.0]), (1, 0, 0, 1))
+    assert scn.ngeom <= scn.maxgeom

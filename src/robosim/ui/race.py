@@ -26,6 +26,13 @@ a seeded DRIVER PERSONALITY — small per-car offsets in aggression (throttle sc
 cornering lookahead, and action jitter (`--variation`, 0 disables). Same checkpoint,
 different driving styles: that's what makes overtakes happen. Every car leaves a tracer
 in its own color ('t' toggles).
+
+`--firearms rocket` arms every car (`combat/rockets.py`). Cars whose checkpoint trained
+with firearms fire from their own policy action; cars driven by weaponless checkpoints
+use the scripted intercept gunner, so any checkpoint can fight. Rockets fly real
+parabolas, detonate on the first thing they touch, and destroy everything within the
+blast radius — shooter included. A destroyed car turns charcoal, tumbles, and is
+rebuilt by the marshal after RESPAWN_S. The leaderboard shows K/D.
 """
 
 from __future__ import annotations
@@ -36,10 +43,12 @@ from collections import deque
 import mujoco.viewer
 import numpy as np
 
+from robosim.combat.gunner import ScriptedGunner
+from robosim.combat.rockets import RocketSystem, action_to_aim
 from robosim.core import physics
 from robosim.core.movers import derive_movers, update_movers
 from robosim.core.world import build_multi_world
-from robosim.envs.obs import build_obs
+from robosim.envs.obs import build_obs, combat_block
 from robosim.envs.tasks.race import LOOKAHEAD_M, _point_at, _project
 from robosim.sensors.lidar import Lidar, body_subtree_ids
 from robosim.train.run_config import env_kwargs_from_run, task_params_from_run
@@ -56,6 +65,8 @@ OFFTRACK_TRIGGER_S = 1.5  # escaped this long -> marshal brings it back
 WRONGWAY_TRIGGER_S = 2.5  # heading against the track this long -> marshal turns it around
 NO_PROGRESS_EPS = 0.5  # must gain this many meters of race distance...
 NO_PROGRESS_TRIGGER_S = 6.0  # ...within this window, else marshal (catch-all)
+RESPAWN_S = 4.0  # destroyed car sits burning this long before the marshal rebuilds it
+CHARCOAL = (0.15, 0.15, 0.15)
 
 PALETTE = [
     ("RED", (0.85, 0.10, 0.10)),
@@ -78,6 +89,9 @@ class _CarState:
         lap_around = i // len(PALETTE)
         self.name = base_name if lap_around == 0 else f"{base_name}{lap_around + 1}"
         self.rgba = (*rgb, 0.85)
+        self.rgb = rgb
+        self.armed = False  # this car's checkpoint trained with firearms (5-dim action)
+        self.gunner: ScriptedGunner | None = None
         self.model_idx = 0
         self.tag = ""  # run name of the model driving this car (multi-model duels)
         self.label = self.name  # display name; gains ":tag" in duels
@@ -132,12 +146,16 @@ def _uprightness(quat_wxyz) -> float:
     return float(1.0 - 2.0 * (x * x + y * y))
 
 
+def _tint_car(world, i: int, rgb) -> None:
+    for geom_name in world.robots[i].collision_geom_names():
+        geom_id = world.model.geom(world.prefixes[i] + geom_name).id
+        world.model.geom_rgba[geom_id][:3] = rgb
+
+
 def _tint_cars(world) -> None:
-    for i, robot in enumerate(world.robots):
+    for i in range(len(world.robots)):
         _, rgb = PALETTE[i % len(PALETTE)]
-        for geom_name in robot.collision_geom_names():
-            geom_id = world.model.geom(world.prefixes[i] + geom_name).id
-            world.model.geom_rgba[geom_id][:3] = rgb
+        _tint_car(world, i, rgb)
 
 
 def _run_tag(checkpoint: str) -> str:
@@ -162,6 +180,8 @@ def run_race(
     variation: float = 0.5,
     lookahead: float = LOOKAHEAD_M,
     lookahead_time: float = 0.0,
+    firearms: str = "none",
+    rocket_speed: float = 40.0,
 ) -> None:
     from robosim.train.play import _load_model
 
@@ -179,9 +199,10 @@ def run_race(
                       else int(np.random.SeedSequence().generate_state(1)[0]))
     # per-model sensing + lookahead, each from its OWN run config (CLI values are the
     # fallback for runs that didn't record them) — a brain must see the obs it trained on
-    lidar_kwargs_per_model, la_base, la_time = [], [], []
+    lidar_kwargs_per_model, la_base, la_time, armed_per_model = [], [], [], []
     for c in checkpoints:
         env_kwargs = env_kwargs_from_run(c)
+        armed_per_model.append(env_kwargs.get("firearms") == "rocket")
         lidar_kwargs_per_model.append(dict(
             n_beams=env_kwargs.get("n_lidar_beams", 16),
             fov_deg=env_kwargs.get("lidar_fov_deg", 270.0),
@@ -190,6 +211,11 @@ def run_race(
         task_params = task_params_from_run(c)
         la_base.append(float(task_params.get("lookahead", lookahead)))
         la_time.append(float(task_params.get("lookahead_time", lookahead_time)))
+    if firearms == "none" and any(armed_per_model):
+        raise SystemExit("this checkpoint trained with --firearms rocket: "
+                         "run race with --firearms rocket")
+    if firearms not in ("none", "rocket"):
+        raise SystemExit(f"unknown --firearms '{firearms}' (none | rocket)")
 
     world = build_multi_world(scene, robot, n_cars=cars)
     info = world.scene.task_info()
@@ -219,6 +245,8 @@ def run_race(
     for i in range(cars):
         m = i % n_models  # round-robin model assignment
         car = _CarState(world, i, lidar_kwargs_per_model[m])
+        car.armed = firearms == "rocket" and armed_per_model[m]
+        car.prev_action = np.zeros(5 if car.armed else 2, dtype=np.float32)
         car.model_idx = m
         car.tag = tags[m]
         car.label = car.name if n_models == 1 else f"{car.name}:{car.tag}"
@@ -234,6 +262,20 @@ def run_race(
         print(f"  {car.label:15s} aggression {car.aggression:.2f}  "
               f"lookahead {car.lookahead:.2f} m  jitter {car.jitter:.3f}", flush=True)
     group_indices = [[c.index for c in car_states if c.model_idx == m] for m in range(n_models)]
+
+    rockets: RocketSystem | None = None
+    if firearms == "rocket":
+        rockets = RocketSystem(
+            world.model, [c.chassis_id for c in car_states], [c.body_ids for c in car_states],
+            list(world.qvel_adrs), rocket_speed=rocket_speed, rng=rng,
+        )
+        for car in car_states:
+            if not car.armed:  # weaponless brain: the scripted gunner pulls the trigger
+                car.gunner = ScriptedGunner(
+                    gun_range=20.0, sigma_deg=2.0 + 6.0 * v * rng.uniform(), rng=rng)
+        print(f"  firearms: rocket at {rocket_speed:g} m/s -- "
+              f"{sum(c.armed for c in car_states)} policy gunners, "
+              f"{sum(c.gunner is not None for c in car_states)} scripted", flush=True)
 
     state = overlay.OverlayState(speed=max(0.1, min(5.0, speed)))
     timer = overlay.HudTimer()
@@ -271,6 +313,9 @@ def run_race(
         car.wrong_way_for = 0.0
         car.progress_anchor = car.progress
         car.progress_timer = 0.0
+        if rockets is not None:
+            rockets.revive(car.index)
+            _tint_car(world, car.index, car.rgb)
         print(f"[race] marshal: {car.label} back on track ({reason})", flush=True)
 
     def reset_race():
@@ -290,6 +335,9 @@ def run_race(
             car.progress_anchor = 0.0
             car.progress_timer = 0.0
             car.trail.clear()
+            _tint_car(world, car.index, car.rgb)
+        if rockets is not None:
+            rockets.reset()
         lstm_states = [None] * n_models
         episode_starts = [np.ones(len(g), dtype=bool) for g in group_indices]
         winner = None
@@ -308,7 +356,8 @@ def run_race(
         print(f"robosim race — MODEL DUEL: {' vs '.join(tags)} across {cars} cars, "
               f"first to {laps} laps wins")
     print("keys: space pause · -/= speed · c follow leader · x contacts · t trail · "
-          "r restart · p screenshot · h hud", flush=True)
+          "r restart · p screenshot · h hud"
+          + (" · rockets: ON" if firearms == "rocket" else ""), flush=True)
 
     with mujoco.viewer.launch_passive(
         world.model,
@@ -342,8 +391,22 @@ def run_race(
                     if car.la_time > 0:  # speed-scaled, matching this car's training
                         la = max(la, world.car_speed(car.index) * car.la_time)
                     goal = _point_at(pts, cum, total, car.s + la)
+                    combat = None
+                    if rockets is not None and car.armed:
+                        others = [
+                            (world.car_pose(o.index)[0][:2], world.car_velocity(o.index)[:2])
+                            for o in car_states
+                            if o is not car and not rockets.is_dead(o.index)
+                        ]
+                        in_flight = [(r.pos, r.vel) for r in rockets.rockets
+                                     if r.owner != car.index]
+                        combat = combat_block(
+                            pos[:2], quat, world.car_velocity(car.index)[:2],
+                            others, rockets.ready(car.index), in_flight,
+                        )
                     obs_rows.append(
-                        build_obs(ranges, pos[:2], quat, goal, proprio, car.prev_action)
+                        build_obs(ranges, pos[:2], quat, goal, proprio, car.prev_action,
+                                  combat=combat)
                     )
 
                 actions = [None] * cars  # each model drives its own group of cars
@@ -363,23 +426,53 @@ def run_race(
 
                 for car, action in zip(car_states, actions):
                     action = np.asarray(action, dtype=np.float32)
-                    action[0] *= car.aggression
+                    drive = action[:2].copy()
+                    drive[0] *= car.aggression
                     if car.jitter > 0:
-                        action = action + rng.normal(0.0, car.jitter, size=2)
-                    action = np.clip(action, -1.0, 1.0).astype(np.float32)
-                    car.update_stall(world.car_speed(car.index), control_dt, rng)
-                    if car.recovering:  # scripted un-wedge: back out with a twist
-                        action = np.array([-0.6, car.recovery_steer], dtype=np.float32)
+                        drive = drive + rng.normal(0.0, car.jitter, size=2)
+                    drive = np.clip(drive, -1.0, 1.0).astype(np.float32)
+                    dead = rockets is not None and rockets.is_dead(car.index)
+                    if dead:  # a wreck coasts
+                        drive = np.zeros(2, dtype=np.float32)
+                    else:
+                        car.update_stall(world.car_speed(car.index), control_dt, rng)
+                        if car.recovering:  # scripted un-wedge: back out with a twist
+                            drive = np.array([-0.6, car.recovery_steer], dtype=np.float32)
                     world.set_ctrl(
-                        car.index, world.robots[car.index].action_to_ctrl(action)
+                        car.index, world.robots[car.index].action_to_ctrl(drive)
                     )
-                    car.prev_action = action
+                    if rockets is not None and not dead:
+                        if car.armed:
+                            if action[2] >= 0.5:
+                                az, el = action_to_aim(action[3], action[4])
+                                rockets.fire(world.data, car.index, az, el)
+                        elif car.gunner is not None:
+                            aim = car.gunner.decide(rockets, world.data, car.index)
+                            if aim is not None:
+                                rockets.fire(world.data, car.index, *aim)
+                    if car.armed:
+                        car.prev_action = np.concatenate([drive, action[2:5]]).astype(np.float32)
+                    else:
+                        car.prev_action = drive
 
+                sub_dt = world.model.opt.timestep
                 for _ in range(steps_per_action):
                     if movers:
                         update_movers(world.data, movers, world.data.time)
                     mujoco.mj_step(world.model, world.data)
+                    if rockets is not None:
+                        rockets.step(world.model, world.data, sub_dt)
                 race_time += control_dt
+                if rockets is not None:
+                    for ev in rockets.pop_events():
+                        if ev["type"] == "kill":
+                            s_, v_ = car_states[ev["shooter"]], car_states[ev["victim"]]
+                            _tint_car(world, v_.index, CHARCOAL)
+                            print(f"[race] KILL: {s_.label} -> {v_.label}", flush=True)
+                        elif ev["type"] == "self_kill":
+                            c_ = car_states[ev["car"]]
+                            _tint_car(world, c_.index, CHARCOAL)
+                            print(f"[race] SELF-KILL: {c_.label}", flush=True)
 
                 for car in car_states:
                     pos, quat = world.car_pose(car.index)
@@ -392,6 +485,12 @@ def run_race(
                     car.s = s_new
                     car.progress += float(np.clip(ds, -1.0, 1.0))
                     car.laps = max(car.laps, int(car.progress // total))
+                    if rockets is not None and rockets.is_dead(car.index):
+                        car.progress_anchor = car.progress
+                        car.progress_timer = 0.0
+                        if rockets.launchers[car.index].dead_for >= RESPAWN_S:
+                            marshal_respawn(car, "destroyed")
+                        continue
 
                     # marshal watchdogs — physics stays real, but a car that stops
                     # earning race distance gets brought back to the racing surface:
@@ -437,8 +536,12 @@ def run_race(
                     standings = sorted(car_states, key=lambda c: -c.race_distance())
                     print(f"\nWINNER: {winner.label} in {race_time:.1f} s", flush=True)
                     for rank, car in enumerate(standings, 1):
+                        kd = ""
+                        if rockets is not None:
+                            L = rockets.launchers[car.index]
+                            kd = f"  K{L.kills}/D{L.deaths}"
                         print(f"  P{rank} {car.label:15s} laps {car.laps} "
-                              f"({car.progress:.1f} m)", flush=True)
+                              f"({car.progress:.1f} m){kd}", flush=True)
                 stepped = True
 
             timer.update(world.data.time, steps_per_action if stepped else 0)
@@ -474,6 +577,16 @@ def run_race(
                             scn, origin, dirs, ranges_m, car.lidar.max_range,
                             rgba_hit=car.rgba,
                         )
+                if rockets is not None:
+                    for r in rockets.rockets:
+                        overlay.draw_rocket(scn, r, car_states[r.owner].rgba)
+                    for b in rockets.blasts:
+                        overlay.draw_blast(scn, b, world.data.time - b.time, rockets.blast_radius)
+                    for car in car_states:
+                        L = rockets.launchers[car.index]
+                        if L.cooldown_left > 0 and L.last_dir is not None and L.dead_for < 0:
+                            pos, _ = world.car_pose(car.index)
+                            overlay.draw_aim(scn, pos + np.array([0, 0, 0.2]), L.last_dir, car.rgba)
 
             if frame_start - last_hud > HUD_PERIOD:
                 last_hud = frame_start
@@ -481,12 +594,23 @@ def run_race(
                     board_left = "\n".join(
                         f"P{rank}" for rank in range(1, len(standings) + 1)
                     )
+                    def status(car):
+                        if rockets is not None and rockets.is_dead(car.index):
+                            return " DEAD"
+                        return (" FLIP" if car.flipped_for > 0
+                                else (" OFF" if car.off_track_for > 0
+                                      else (" rec" if car.recovering else "")))
+
+                    def kd(car):
+                        if rockets is None:
+                            return ""
+                        L = rockets.launchers[car.index]
+                        return f" K{L.kills}/D{L.deaths}"
+
                     board_right = "\n".join(
                         f"{car.label} L{min(car.laps, laps)}/{laps} "
                         f"{car.progress:6.1f}m {world.car_speed(car.index):3.1f}m/s"
-                        + (" FLIP" if car.flipped_for > 0
-                           else (" OFF" if car.off_track_for > 0
-                                 else (" rec" if car.recovering else "")))
+                        + kd(car) + status(car)
                         for car in standings
                     )
                     texts = [
