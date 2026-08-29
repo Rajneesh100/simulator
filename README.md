@@ -353,8 +353,10 @@ Every car gets a rocket launcher (`src/robosim/combat/`). Rockets leave with the
 own velocity plus `--rocket-speed` (40 m/s) along the aim, fall under gravity (real
 parabola: range = v^2 sin(2 el) / g, ~1.8 deg of elevation for a 10 m shot; launchers
 depress to -15 deg for close targets), detonate on the first thing they touch, and
-destroy every car within 2 m — the shooter included. A destroyed car turns charcoal,
-tumbles, and is rebuilt by the marshal after 4 s. Kills/deaths show on the leaderboard.
+destroy every car within 2 m — the shooter included. Like a real RPG fuze, a rocket only
+ARMS after 4 m of flight: anything it hits sooner is a dud (no blast), so point-blank
+shots can't be suicide. A destroyed car turns charcoal, tumbles, and is rebuilt by the
+marshal after 4 s. Kills/deaths show on the leaderboard.
 
 Watch it today with any checkpoint (weaponless brains get a scripted intercept gunner
 that solves the moving-platform / moving-target ballistics exactly, plus a little aim
@@ -404,8 +406,10 @@ intercept solutions inherit the estimation error. `--combat-sensor oracle` is th
 physics-truth ablation for debugging. The 48-beam lidar stays for driving; it cannot
 resolve a car past ~3 m (7.5 deg between beams), which is why sight is modeled as eyes.
 
-Reward in versus+firearms: +15 per kill, -20 and episode over when destroyed (own blast
-included), -0.3 per shot, on top of the usual progress/overtake/takedown/win terms.
+Reward in versus+firearms: +15 per kill, -20 and episode over when destroyed (-30 if
+it was your own blast), -0.3 per shot, on top of the usual progress/overtake/takedown/win
+terms. Scripted gunners hold fire when the predicted impact is inside the arming
+distance or within blast radius + 1 m of where THEY will be at impact time.
 `firearms`/`rocket_speed` are recorded in the run's config.yaml and recovered by
 `play`/`race` like the lidar settings; a checkpoint trained with rockets refuses to race
 without `--firearms rocket`. For a stronger league, train rally7 versus frozen rally6.

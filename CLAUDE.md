@@ -444,4 +444,12 @@ observation from this same function so the real robot can emit an identical vect
   recovered by race so a brain always sees the way it trained. Gotcha: obs and gunner
   both call `rivals()` in the same control step — the second call at the same sim time
   must return the cached estimate, not dt=0 -> velocity 0.
+- **2026-08-30 — Self-kill control: 4 m arming distance + predicted-position safety +
+  extra penalty.** First live races had ~3 self-kills per 25 s among 5 scripted gunners:
+  point-blank shots off a bunched grid, and the safety check compared the impact point
+  to where the shooter WAS, not where it would be at impact. Fixes, all real-life
+  mechanisms: `MIN_ARM_M = 4.0` (impact before that = dud, event `{"type": "dud"}`),
+  gunner skips targets inside arming range and any shot whose impact lands within
+  blast + 1 m of `my_pos + my_vel * t_flight`, and the learner pays
+  DEATH_PENALTY + SELF_KILL_PENALTY (-30) with `info["self_kill"]` for own-blast deaths.
 - (Further decisions get appended here as they're made — newest at the bottom.)

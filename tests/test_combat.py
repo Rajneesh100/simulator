@@ -581,3 +581,47 @@ def test_run_config_recovers_combat_sensor(tmp_path):
     assert kw["combat_sensor"] == "los" and kw["view_range"] == 0.0
     (run / "config.yaml").write_text(yaml.safe_dump({"firearms": "none", "combat_sensor": "los"}))
     assert "combat_sensor" not in env_kwargs_from_run(str(run / "best_model.zip"))
+
+
+def test_rocket_is_a_dud_inside_arming_distance():
+    """Point-blank shots can't be suicide: an impact closer than MIN_ARM_M doesn't blast."""
+    from robosim.combat.rockets import MIN_ARM_M
+
+    world = _make_world(2, scene="flat")
+    system = _rocket_system(world)
+    _place(world, 0, (0.0, 0.0), 0.0)
+    _place(world, 1, (MIN_ARM_M - 1.5, 0.0), 0.0)  # inside the arming distance
+    system.fire(world.data, 0, az=0.0, el=np.deg2rad(-5.0))  # aimed down onto its chassis
+    _fly(world, system, 0.3)
+    assert not system.is_dead(0) and not system.is_dead(1)
+    assert system.blasts == []
+    assert {"type": "dud", "car": 0} in system.pop_events()
+
+
+def test_gunner_accounts_for_its_own_motion_toward_the_blast():
+    """Chasing a car 5 m ahead at 12 m/s: by impact the shooter has closed to within the
+    blast radius, so it must hold fire; parked, the same shot is fine."""
+    from robosim.combat.gunner import ScriptedGunner
+
+    world = _make_world(2, scene="flat")
+    system = _rocket_system(world, rocket_speed=15.0)  # slow rocket: flight ~0.2-0.3 s
+    gunner = ScriptedGunner(gun_range=20.0, sigma_deg=0.0, rng=np.random.default_rng(0))
+    _place(world, 0, (0.0, 0.0), 0.0)
+    _place(world, 1, (5.0, 0.0), 0.0)
+    assert gunner.decide(system, world.data, 0) is not None  # parked: safe
+    vadr = world.qvel_adrs[0]
+    world.data.qvel[vadr : vadr + 3] = [12.0, 0.0, 0.0]  # charging at it
+    assert gunner.decide(system, world.data, 0) is None
+
+
+def test_versus_self_kill_costs_extra():
+    from robosim.envs.versus_env import DEATH_PENALTY, SELF_KILL_PENALTY
+
+    env = _versus_env(opponents=1, scene="racetrack:obstacles=0,straight=14")
+    env.reset(seed=0)
+    _park_on_straight(env, [(0, 2.0), (1, 12.0)])  # opponent well outside the blast
+    pos = env.world.car_pose(0)[0]
+    env.rockets.detonate(env.world.model, env.world.data, pos, owner=0)  # own rocket
+    _, r, term, _, info = env.step(np.zeros(5, dtype=np.float32))
+    assert term and info.get("self_kill") is True
+    assert r <= -(DEATH_PENALTY + SELF_KILL_PENALTY) + 1.0

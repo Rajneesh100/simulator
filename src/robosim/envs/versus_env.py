@@ -60,6 +60,7 @@ MAX_DS_PER_STEP = 1.0
 KILL_BONUS = 15.0  # opponent destroyed by a rocket the learner fired
 DEATH_PENALTY = 20.0  # learner destroyed (any rocket, own blast included) -> episode over
 SHOT_COST = 0.3  # per launch, so it aims instead of spraying
+SELF_KILL_PENALTY = 10.0  # on top of DEATH_PENALTY: blowing yourself up is the worst death
 OPP_GUN_RANGE = 20.0
 OPP_AIM_SIGMA_DEG = 2.0
 
@@ -503,6 +504,7 @@ class VersusRaceEnv(gym.Env):
         if self.rockets is not None:
             kills = 0
             killed = False
+            self_killed = False
             for ev in self.rockets.pop_events():
                 if ev["type"] == "kill" and ev["shooter"] == 0:
                     kills += 1
@@ -510,7 +512,11 @@ class VersusRaceEnv(gym.Env):
                     killed = True
                 elif ev["type"] == "self_kill" and ev["car"] == 0:
                     killed = True
+                    self_killed = True
             reward += KILL_BONUS * kills - SHOT_COST * shots
+            if self_killed:
+                reward -= SELF_KILL_PENALTY
+                info["self_kill"] = True
             if kills:
                 info["kills"] = kills
             if shots:

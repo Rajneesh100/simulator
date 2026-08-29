@@ -16,7 +16,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from robosim.combat.rockets import LAUNCH_HEIGHT, MAX_ELEVATION, MIN_ELEVATION, RocketSystem
+from robosim.combat.rockets import (
+    LAUNCH_HEIGHT, MAX_ELEVATION, MIN_ARM_M, MIN_ELEVATION, RocketSystem,
+)
+
+SELF_SAFETY_MARGIN = 1.0  # m beyond the blast radius the shooter keeps at impact time
 
 
 def solve_intercept(
@@ -94,15 +98,20 @@ class ScriptedGunner:
             if dist <= self.gun_range:
                 candidates.append((dist, i, tp, tv))
         candidates.sort(key=lambda c: c[0])
-        # nearest viable target: skip rivals with no ballistic solution and rivals so
-        # close the blast would take the shooter out too
+        # nearest viable target: skip rivals with no ballistic solution, rivals inside
+        # the fuze's arming distance (the rocket would be a dud), and rivals so close
+        # that the blast would catch the shooter — judged at the shooter's PREDICTED
+        # position at impact time, since a chasing car drives into its own blast
         for _, i, tp, tv in candidates:
             sol = solve_intercept(sp, sv, tp, tv, system.rocket_speed, system.gravity)
             if sol is None:
                 continue
             heading, el, t = sol
             impact = tp + tv * t
-            if np.linalg.norm(impact - my_pos) <= system.blast_radius + 0.5:
+            if np.linalg.norm(impact - sp) < MIN_ARM_M + 0.5:
+                continue
+            me_at_impact = my_pos + sv * t
+            if np.linalg.norm(impact - me_at_impact) <= system.blast_radius + SELF_SAFETY_MARGIN:
                 continue
             break
         else:

@@ -23,6 +23,8 @@ ROCKET_SPEED = 40.0  # m/s muzzle speed; range = v^2 sin(2 el) / g
 BLAST_RADIUS = 2.0  # m; everything inside dies, shooter included
 COOLDOWN_S = 2.0  # reload
 ARMING_M = 0.5  # rocket ignores its own launcher for this much flight
+MIN_ARM_M = 4.0  # safety arming distance: an impact closer than this is a dud (no blast),
+#                  like a real RPG/ATGM fuze — point-blank shots can't be suicide
 MAX_FLIGHT_S = 4.0  # self-destruct (no blast) after this
 LAUNCH_HEIGHT = 0.2  # m above chassis center, clears cabin and wheels
 MAX_ELEVATION = np.pi / 4  # low-arc family only
@@ -200,6 +202,9 @@ class RocketSystem:
             hit = self._first_hit(model, data, start, direction, seg_len, rocket)
             if hit is not None:
                 rocket.alive = False
+                if rocket.traveled + float(np.linalg.norm(hit - start)) < MIN_ARM_M:
+                    self._events.append({"type": "dud", "car": rocket.owner})
+                    return  # fuze not armed yet: no blast
                 self.detonate(model, data, hit, rocket.owner)
                 return
         rocket.pos = start + seg
