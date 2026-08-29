@@ -23,10 +23,11 @@ def _parse_scene_arg(scene_arg: str) -> tuple[str, dict[str, str]]:
     name, _, param_str = scene_arg.partition(":")
     params: dict[str, str] = {}
     for pair in param_str.split(","):
+        pair = pair.strip()  # 'a=1, b=2' must not become key ' b' (silently ignored)
         if not pair:
             continue
         key, _, val = pair.partition("=")
-        params[key] = val
+        params[key.strip()] = val.strip()
     return name, params
 
 

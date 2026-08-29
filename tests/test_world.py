@@ -64,3 +64,11 @@ def test_reset_returns_to_spawn():
     world.reset()
     pos, _ = world.robot_pose()
     np.testing.assert_allclose(pos, world.spawn_pos, atol=1e-6)
+
+
+def test_parse_scene_arg_tolerates_spaces_around_commas():
+    from robosim.core.world import _parse_scene_arg
+
+    name, params = _parse_scene_arg("racetrack:layout=gp, road_width=3.5 ,hills=6 ")
+    assert name == "racetrack"
+    assert params == {"layout": "gp", "road_width": "3.5", "hills": "6"}
