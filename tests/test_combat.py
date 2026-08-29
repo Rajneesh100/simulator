@@ -154,3 +154,71 @@ def test_rocket_does_not_detonate_on_own_launcher():
     system.fire(world.data, 0, az=np.pi, el=0.0)  # backwards, over own body
     _fly(world, system, 0.05)  # 2 m of flight
     assert not system.is_dead(0)
+
+
+def _simulate_flight(pos, vel, g, t, dt=0.002):
+    p, v = pos.astype(float).copy(), vel.astype(float).copy()
+    for _ in range(int(t / dt)):
+        v[2] -= g * dt
+        p += v * dt
+    return p
+
+
+def test_solve_intercept_hits_crossing_target():
+    from robosim.combat.gunner import solve_intercept
+    from robosim.combat.rockets import aim_direction
+
+    shooter_pos = np.array([0.0, 0.0, 0.3])
+    shooter_vel = np.array([8.0, 0.0, 0.0])
+    target_pos = np.array([12.0, -4.0, 0.1])
+    target_vel = np.array([0.0, 8.0, 0.0])  # crossing left to right ahead
+    sol = solve_intercept(shooter_pos, shooter_vel, target_pos, target_vel, 40.0, G)
+    assert sol is not None
+    heading, el, t = sol
+    assert 0.0 <= el <= np.pi / 4 and 0.1 < t < 1.0
+    vel = shooter_vel + 40.0 * aim_direction(0.0, heading, el)
+    rocket_at_t = _simulate_flight(shooter_pos, vel, G, t)
+    target_at_t = target_pos + target_vel * t
+    assert np.linalg.norm(rocket_at_t - target_at_t) < 0.3
+
+
+def test_solve_intercept_misses_target_that_turns_hard():
+    """The dodge principle: the solution assumes constant velocity; a target that
+    brakes and turns after launch is not where the rocket goes."""
+    from robosim.combat.gunner import solve_intercept
+    from robosim.combat.rockets import aim_direction
+
+    shooter_pos = np.array([0.0, 0.0, 0.3])
+    shooter_vel = np.zeros(3)
+    target_pos = np.array([15.0, 0.0, 0.1])
+    target_vel = np.array([0.0, 10.0, 0.0])
+    heading, el, t = solve_intercept(shooter_pos, shooter_vel, target_pos, target_vel, 40.0, G)
+    vel = 40.0 * aim_direction(0.0, heading, el)
+    rocket_at_t = _simulate_flight(shooter_pos, vel, G, t)
+    dodged = target_pos + np.array([0.0, -10.0, 0.0]) * t  # reversed direction
+    assert np.linalg.norm(rocket_at_t - dodged) > 2.0  # outside the blast radius
+
+
+def test_solve_intercept_none_when_out_of_reach():
+    from robosim.combat.gunner import solve_intercept
+
+    assert solve_intercept(np.zeros(3), np.zeros(3), np.array([500.0, 0, 0]),
+                           np.zeros(3), 40.0, G) is None
+
+
+def test_scripted_gunner_fires_at_target_in_range_and_holds_at_point_blank():
+    from robosim.combat.gunner import ScriptedGunner
+
+    world = _make_world(2, scene="flat")
+    system = _rocket_system(world)
+    gunner = ScriptedGunner(gun_range=20.0, sigma_deg=0.0, rng=np.random.default_rng(0))
+    _place(world, 0, (0.0, 0.0), 0.0)
+    _place(world, 1, (10.0, 3.0), 0.0)
+    aim = gunner.decide(system, world.data, 0)
+    assert aim is not None
+    az, el = aim
+    assert np.isclose(az, np.arctan2(3.0, 10.0), atol=0.05)  # stationary: aim straight at it
+    _place(world, 1, (1.0, 0.0), 0.0)  # inside its own blast radius
+    assert gunner.decide(system, world.data, 0) is None
+    _place(world, 1, (40.0, 0.0), 0.0)  # beyond gun range
+    assert gunner.decide(system, world.data, 0) is None
