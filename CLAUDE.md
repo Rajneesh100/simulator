@@ -494,4 +494,17 @@ observation from this same function so the real robot can emit an identical vect
   extra (`robosim[audio]`) so the training/headless install stays lean. Follow-cam
   target is selectable (`--follow`, `]`/`[`/`0`); brackets are safe keys — MuJoCo's
   native `[`/`]` only cycle fixed cameras, which the per-frame tracking pin overrides.
+- **2026-08-30 — rally6 (run 2, fuze 1.8 m) results: the learned gunner out-shoots the
+  maths gunner.** `evaluate-versus`, 10 episodes x 1500 steps vs 2 rally5 scripted
+  gunners, deterministic: final_model 0.9 kills / 0.6 deaths / 0 self-kills per episode,
+  hit rate 22%, 327 steps survived, 108 m progress, 10% outright wins; best_model (eval
+  peak at 400k) matches the kill rate (0.9, hit 31%) but survives half as long (210
+  steps, 53 m) — eval reward includes near-miss shaping, so it over-rates hunters that
+  die young. Ship/duel with `final_model.zip`. Live 6-car duel (3 rally6 policy gunners
+  vs 3 rally5 scripted, 45 s): rally6 3 kills vs 1. Remaining weakness: crash rate
+  0.3-0.4/episode while dodging under fire (rally5 solo: 0). Checkpoint cards during
+  training: kills/episode rose 0.25 -> 1.0 by 200k and held; deaths fell 1.0 -> 0.25 by
+  600k then drifted back to 0.5-0.75 (late-PPO oscillation, as with rally3). Next
+  league step: rally7 versus frozen rally6 (policy gunner opponents need the env to
+  run a 5-dim frozen policy — not implemented; opponents are scripted gunners today).
 - (Further decisions get appended here as they're made — newest at the bottom.)

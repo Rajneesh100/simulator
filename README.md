@@ -395,8 +395,9 @@ uv run robosim train --task "race:laps=2,lookahead=2.5,lookahead_time=0.6" \
   --firearms rocket --rocket-speed 40 \
   --bc-init runs/rally5/aim_init.pt --run-name rally6
 
-# then: rally6 (policy gunner) vs rally5 (scripted gunner)
-uv run robosim race --checkpoint runs/rally6/best_model.zip --checkpoint runs/rally5/best_model.zip \
+# then: rally6 (policy gunner) vs rally5 (scripted gunner). Use final_model: eval reward
+# picks best_model by shaped return, but final drives longer under fire (see decision log)
+uv run robosim race --checkpoint runs/rally6/final_model.zip --checkpoint runs/rally5/best_model.zip \
   --scene "racetrack:layout=gp,scale=18,seed=11,obstacles=0,road_width=3.5" \
   --robot racecar:max_speed=12,max_torque=1.2 --cars 6 --laps 5 --firearms rocket
 ```
@@ -438,7 +439,7 @@ leader). In the viewer `]` / `[` cycle cars, `0` snaps back to the leader, `c` t
 follow on/off; the HUD shows `follow: ...` and the leaderboard marks the car with `>`.
 
 ```bash
-uv run robosim race --checkpoint runs/rally6/best_model.zip --checkpoint runs/rally5/best_model.zip \
+uv run robosim race --checkpoint runs/rally6/final_model.zip --checkpoint runs/rally5/best_model.zip \
   --scene "racetrack:layout=gp,scale=18,seed=11,obstacles=0,road_width=3.5" \
   --robot racecar:max_speed=12,max_torque=1.2 --cars 6 --laps 5 --firearms rocket \
   --sound --follow RED
