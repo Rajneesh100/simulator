@@ -61,6 +61,10 @@ rendering changes, press the same key again to undo — that's MuJoCo, not a sce
       terminal prints `marshal: ... back on track (destroyed)` and its color returns.
 - [ ] Leaderboard rows carry `K#/D#`; terminal prints `KILL: RED -> BLUE` and
       `SELF-KILL: ...` when a car fires point-blank.
+- [ ] `--sound --follow BLUE`: BLUE's engine is loudest and centered, pitch rises with
+      speed, a passing car sweeps left/right, launches whoosh, blasts thump (louder when
+      near). `]`/`[` cycle the followed car (HUD `follow:` and `>` on the board), `0`
+      returns to the leader.
 
 Known cosmetic quirk: `r` (reset) also toggles the native floor-reflection flag —
 subtle, and pressing `r` twice restores it; MuJoCo offers no way to suppress it.

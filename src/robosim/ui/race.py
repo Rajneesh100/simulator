@@ -33,6 +33,11 @@ use the scripted intercept gunner, so any checkpoint can fight. Rockets fly real
 parabolas, detonate on the first thing they touch, and destroy everything within the
 blast radius — shooter included. A destroyed car turns charcoal, tumbles, and is
 rebuilt by the marshal after RESPAWN_S. The leaderboard shows K/D.
+
+Follow-cam picks a car: `--follow leader|RED|BLUE|3` (color, name, or grid index);
+in the viewer `]` / `[` cycle cars, `0` snaps back to the leader, `c` toggles follow.
+`--sound` adds procedural, spatialized audio (`ui/audio.py`): engines pitched by speed,
+launches, blasts — attenuated and panned relative to the camera you are looking through.
 """
 
 from __future__ import annotations
@@ -54,6 +59,7 @@ from robosim.envs.tasks.race import LOOKAHEAD_M, _point_at, _project
 from robosim.sensors.lidar import Lidar, body_subtree_ids
 from robosim.train.run_config import env_kwargs_from_run, task_params_from_run
 from robosim.ui import overlay
+from robosim.ui.audio import AudioMixer
 
 HUD_PERIOD = 0.1
 STALL_SPEED = 0.12  # m/s under which a car counts as stopped
@@ -160,6 +166,23 @@ def _tint_cars(world) -> None:
         _tint_car(world, i, rgb)
 
 
+def resolve_follow(spec: str, car_states) -> int | None:
+    """'leader' -> None; a color/name/label ('BLUE', 'blue:rally6') or grid index -> car index."""
+    key = (spec or "leader").strip().lower()
+    if key in ("leader", "lead", "first", ""):
+        return None
+    if key.isdigit():
+        i = int(key)
+        if 0 <= i < len(car_states):
+            return i
+        raise SystemExit(f"--follow {spec}: grid index out of range (0..{len(car_states) - 1})")
+    for car in car_states:
+        if key in (car.name.lower(), car.label.lower()):
+            return car.index
+    names = ", ".join(c.label for c in car_states)
+    raise SystemExit(f"--follow {spec}: no such car (leader, a grid index, or one of {names})")
+
+
 def _run_tag(checkpoint: str) -> str:
     """Short label for a checkpoint: its run directory name (rally1, rally3, ...)."""
     from pathlib import Path
@@ -186,6 +209,8 @@ def run_race(
     rocket_speed: float = 40.0,
     combat_sensor: str = "los",
     view_range: float = 0.0,
+    follow: str = "leader",
+    sound: bool = False,
 ) -> None:
     from robosim.train.play import _load_model
 
@@ -302,6 +327,14 @@ def run_race(
               f"sight: {'/'.join(modes)}, "
               f"{max(e.view_range for e in eyes_by_mode.values()):g} m", flush=True)
 
+    follow_idx: int | None = resolve_follow(follow, car_states)
+    mixer: AudioMixer | None = None
+    if sound:
+        mixer = AudioMixer(n_cars=cars, seed=0 if seed is None else seed)
+        if not mixer.start():
+            mixer = None
+    seen_blasts: set[int] = set()
+
     state = overlay.OverlayState(speed=max(0.1, min(5.0, speed)))
     timer = overlay.HudTimer()
     steps_per_action = physics.physics_steps_per_control_step()
@@ -372,8 +405,19 @@ def run_race(
         state.trail.clear()
 
     def key_callback(keycode):
-        if 0 < keycode < 256 and chr(keycode).lower() == "r":
+        nonlocal follow_idx
+        char = chr(keycode).lower() if 0 < keycode < 256 else ""
+        if char == "r":
             reset_race()
+        elif char == "]":  # next car (leader -> grid 0 -> 1 -> ...)
+            follow_idx = 0 if follow_idx is None else (follow_idx + 1) % cars
+            state.follow = True
+        elif char == "[":
+            follow_idx = cars - 1 if follow_idx is None else (follow_idx - 1) % cars
+            state.follow = True
+        elif char == "0":
+            follow_idx = None
+            state.follow = True
         else:
             overlay.handle_common_key(state, keycode, world=None)
 
@@ -382,9 +426,10 @@ def run_race(
     else:
         print(f"robosim race — MODEL DUEL: {' vs '.join(tags)} across {cars} cars, "
               f"first to {laps} laps wins")
-    print("keys: space pause · -/= speed · c follow leader · x contacts · t trail · "
-          "r restart · p screenshot · h hud"
-          + (" · rockets: ON" if firearms == "rocket" else ""), flush=True)
+    print("keys: space pause · -/= speed · c follow on/off · ]/[ next/prev car · 0 leader · "
+          "x contacts · t trail · r restart · p screenshot · h hud"
+          + (" · rockets: ON" if firearms == "rocket" else "")
+          + (" · sound: ON" if mixer is not None else ""), flush=True)
 
     with mujoco.viewer.launch_passive(
         world.model,
@@ -494,6 +539,10 @@ def run_race(
                 race_time += control_dt
                 if rockets is not None:
                     for ev in rockets.pop_events():
+                        if mixer is not None and ev["type"] == "shot":
+                            mixer.play("launch", world.car_pose(ev["car"])[0])
+                        elif mixer is not None and ev["type"] == "dud":
+                            mixer.play("dud", world.car_pose(ev["car"])[0])
                         if ev["type"] == "kill":
                             s_, v_ = car_states[ev["shooter"]], car_states[ev["victim"]]
                             _tint_car(world, v_.index, CHARCOAL)
@@ -576,10 +625,28 @@ def run_race(
             timer.update(world.data.time, steps_per_action if stepped else 0)
             standings = sorted(car_states, key=lambda c: -c.race_distance())
             leader = standings[0]
+            target = leader if follow_idx is None else car_states[follow_idx]
+
+            if mixer is not None:
+                lookat = world.car_pose(target.index)[0] if state.follow else None
+                mixer.set_listener(viewer.cam, lookat)
+                mixer.update([
+                    (world.car_pose(c.index)[0], world.car_velocity(c.index),
+                     world.car_speed(c.index), float(c.prev_action[0]),
+                     rockets is None or not rockets.is_dead(c.index))
+                    for c in car_states
+                ])
+                if rockets is not None:
+                    for b in rockets.blasts:
+                        if id(b) not in seen_blasts:
+                            seen_blasts.add(id(b))
+                            mixer.play("blast", b.pos)
+                    if len(seen_blasts) > 256:
+                        seen_blasts = {id(b) for b in rockets.blasts}
 
             with viewer.lock():
                 overlay.apply_camera(
-                    viewer.cam, world.model, world.root_body_names[leader.index], state
+                    viewer.cam, world.model, world.root_body_names[target.index], state
                 )
                 overlay.apply_vis_flags(viewer.opt, state)
                 scn = viewer.user_scn
@@ -637,18 +704,21 @@ def run_race(
                         return f" K{L.kills}/D{L.deaths}"
 
                     board_right = "\n".join(
-                        f"{car.label} L{min(car.laps, laps)}/{laps} "
+                        (">" if car is target else " ")
+                        + f"{car.label} L{min(car.laps, laps)}/{laps} "
                         f"{car.progress:6.1f}m {world.car_speed(car.index):3.1f}m/s"
                         + kd(car) + status(car)
                         for car in standings
                     )
+                    follow_txt = ("leader" if follow_idx is None else target.label) + (
+                        "" if state.follow else " (off)")
                     texts = [
                         (
                             overlay.FONT_HUD,
                             overlay.GRID.mjGRID_TOPLEFT,
-                            f"race\ntime\nlaps\ncars",
+                            f"race\ntime\nlaps\ncars\nfollow",
                             f"{'FINISHED' if winner else 'running'}\n"
-                            f"{race_time:.1f} s\n{laps}\n{cars}",
+                            f"{race_time:.1f} s\n{laps}\n{cars}\n{follow_txt}",
                         ),
                         (overlay.FONT_HUD, overlay.GRID.mjGRID_TOPRIGHT, board_left, board_right),
                     ]
@@ -680,3 +750,5 @@ def run_race(
             elapsed = time.perf_counter() - frame_start
             if elapsed < target_dt:
                 time.sleep(target_dt - elapsed)
+    if mixer is not None:
+        mixer.stop()

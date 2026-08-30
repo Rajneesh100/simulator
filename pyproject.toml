@@ -24,6 +24,9 @@ dependencies = [
 dev = [
     "pytest>=8.0",
 ]
+audio = [
+    "sounddevice>=0.4",
+]
 
 [project.scripts]
 robosim = "robosim.cli:app"

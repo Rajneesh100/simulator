@@ -297,3 +297,24 @@ def test_rocket_and_blast_overlays_draw_headless():
     assert scn.ngeom == n_after_blast
     overlay.draw_aim(scn, np.array([0.0, 0.0, 0.3]), np.array([1.0, 0.0, 0.0]), (1, 0, 0, 1))
     assert scn.ngeom <= scn.maxgeom
+
+
+def test_resolve_follow_by_name_index_and_leader():
+    import pytest
+
+    from robosim.ui.race import resolve_follow
+
+    class Car:
+        def __init__(self, i, name, label):
+            self.index, self.name, self.label = i, name, label
+
+    cars = [Car(0, "RED", "RED:rally6"), Car(1, "GREEN", "GREEN:rally5"), Car(2, "BLUE", "BLUE:rally6")]
+    assert resolve_follow("leader", cars) is None
+    assert resolve_follow("", cars) is None
+    assert resolve_follow("blue", cars) == 2
+    assert resolve_follow("GREEN:rally5", cars) == 1
+    assert resolve_follow("1", cars) == 1
+    with pytest.raises(SystemExit):
+        resolve_follow("PURPLE", cars)
+    with pytest.raises(SystemExit):
+        resolve_follow("7", cars)

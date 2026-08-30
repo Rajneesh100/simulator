@@ -423,6 +423,27 @@ distance or within blast radius + 1 m of where THEY will be at impact time.
 `play`/`race` like the lidar settings; a checkpoint trained with rockets refuses to race
 without `--firearms rocket`. For a stronger league, train rally7 versus frozen rally6.
 
+### Sound and follow-cam
+
+`--sound` adds procedural, spatialized audio (no sample files; `ui/audio.py`, needs
+`uv sync --extra audio` for `sounddevice`/PortAudio): every car's engine is a harmonic
+buzz pitched by its speed and scaled by throttle; rocket launches whoosh, blasts thump,
+duds thunk. The listener is the viewer camera, so each source is attenuated by distance,
+panned left/right by its bearing to the view direction, and Doppler-shifted by radial
+speed — the car you follow is loud and centered, an overtaker sweeps across the stereo
+field. Without an audio device it prints one warning and runs silent.
+
+`--follow leader|BLUE|blue:rally6|3` picks the follow-cam target (default: the live
+leader). In the viewer `]` / `[` cycle cars, `0` snaps back to the leader, `c` toggles
+follow on/off; the HUD shows `follow: ...` and the leaderboard marks the car with `>`.
+
+```bash
+uv run robosim race --checkpoint runs/rally6/best_model.zip --checkpoint runs/rally5/best_model.zip \
+  --scene "racetrack:layout=gp,scale=18,seed=11,obstacles=0,road_width=3.5" \
+  --robot racecar:max_speed=12,max_torque=1.2 --cars 6 --laps 5 --firearms rocket \
+  --sound --follow RED
+```
+
 MODEL DUELS — repeat `--checkpoint` to pit different trained models against each other
 (cars assigned round-robin; roof tags and the leaderboard show `COLOR:runname`; each
 model automatically gets the lidar/lookahead settings it trained with):

@@ -246,6 +246,8 @@ def race(
         "los", help="Scripted gunners' sight: los (line of sight + range) | oracle"
     ),
     view_range: float = typer.Option(0.0, help="Sight range m (0 = lidar range)"),
+    follow: str = typer.Option("leader", help="Follow-cam target: leader | color/name (BLUE) | grid index"),
+    sound: bool = typer.Option(False, "--sound", help="Spatialized engine/rocket audio (needs robosim[audio])"),
 ):
     """Grid-start N copies of the same policy and race them to a winner."""
     _ensure_mjpython()
@@ -257,6 +259,7 @@ def race(
         lookahead=lookahead, lookahead_time=lookahead_time,
         firearms=firearms, rocket_speed=rocket_speed,
         combat_sensor=combat_sensor, view_range=view_range,
+        follow=follow, sound=sound,
     )
 
 

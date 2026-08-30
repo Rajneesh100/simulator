@@ -481,4 +481,17 @@ observation from this same function so the real robot can emit an identical vect
   all four: warm start scores kills before any PPO step. Lesson: with a needle-in-
   haystack reward, verify each link (labels -> fires -> arms -> fuzes -> credit) with
   its own measurement; every link here was silently broken.
+- **2026-08-30 — Race audio is procedural + spatialized in numpy, output via
+  `sounddevice`; no sample files (`ui/audio.py`).** Engines = 6-harmonic sawtooth-ish
+  voice at 40 Hz + 25 Hz/(m/s), volume by throttle, linear-ramped per 1024-sample block
+  (no clicks); launch/blast/dud are noise bursts through a one-pole low-pass, generated
+  once at init. The listener is the viewer camera: position = lookat - distance*forward
+  from azimuth/elevation (pass the followed car's position as lookat under a tracking
+  camera — the viewer updates cam.lookat only at render time), inverse-square gain with
+  a 3 m knee, constant-power pan by bearing vs the camera's right vector, Doppler by
+  radial velocity. `render_block` is pure numpy so the mixer is tested headless;
+  `start()` degrades to silence without PortAudio/a device. `sounddevice` is an optional
+  extra (`robosim[audio]`) so the training/headless install stays lean. Follow-cam
+  target is selectable (`--follow`, `]`/`[`/`0`); brackets are safe keys — MuJoCo's
+  native `[`/`]` only cycle fixed cameras, which the per-frame tracking pin overrides.
 - (Further decisions get appended here as they're made — newest at the bottom.)
