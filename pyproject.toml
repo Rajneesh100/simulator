@@ -27,6 +27,10 @@ dev = [
 audio = [
     "sounddevice>=0.4",
 ]
+video = [
+    "imageio-ffmpeg>=0.4",
+    "pillow>=10",
+]
 
 [project.scripts]
 robosim = "robosim.cli:app"

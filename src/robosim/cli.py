@@ -248,6 +248,11 @@ def race(
     view_range: float = typer.Option(0.0, help="Sight range m (0 = lidar range)"),
     follow: str = typer.Option("leader", help="Follow-cam target: leader | color/name (BLUE) | grid index"),
     sound: bool = typer.Option(False, "--sound", help="Spatialized engine/rocket audio (needs robosim[audio])"),
+    record_video: str = typer.Option(None, "--record-video", help="Record video+audio to this .mp4 (needs robosim[video])"),
+    record_fps: int = typer.Option(30, help="Recording frame rate (sim-clock)"),
+    record_seconds: float = typer.Option(
+        0.0, help="Stop and save the recording after this many sim seconds (0 = until the window closes)"
+    ),
 ):
     """Grid-start N copies of the same policy and race them to a winner."""
     _ensure_mjpython()
@@ -259,7 +264,8 @@ def race(
         lookahead=lookahead, lookahead_time=lookahead_time,
         firearms=firearms, rocket_speed=rocket_speed,
         combat_sensor=combat_sensor, view_range=view_range,
-        follow=follow, sound=sound,
+        follow=follow, sound=sound, record_video=record_video, record_fps=record_fps,
+        record_seconds=record_seconds,
     )
 
 

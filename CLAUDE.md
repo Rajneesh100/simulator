@@ -507,4 +507,17 @@ observation from this same function so the real robot can emit an identical vect
   600k then drifted back to 0.5-0.75 (late-PPO oscillation, as with rally3). Next
   league step: rally7 versus frozen rally6 (policy gunner opponents need the env to
   run a 5-dim frozen policy — not implemented; opponents are scripted gunners today).
+- **2026-08-30 — Built-in recording renders offscreen at the sim clock and muxes offline
+  audio (`ui/recorder.py`), instead of screen-capturing the window.** Frame capture is
+  checked after every 2 ms physics substep (`recorder.due(data.time)`), so 30 fps is
+  sampled exactly from the simulation regardless of wall-clock speed, and the audio track
+  is `AudioMixer.render_block` called with a cumulative-rounded sample count per frame —
+  A/V lockstep by construction. The offscreen `mujoco.Renderer` does not see the
+  viewer's `user_scn`, so the overlay drawing in race.py was factored into one
+  `draw_overlays(scn)` used for both the window and `renderer.scene`; the HUD (drawn by
+  the viewer with mjr_overlay) is re-created with Pillow text burned onto the frame.
+  ffmpeg comes from the `imageio-ffmpeg` wheel (`robosim[video]` extra). The race loop
+  is wrapped in try/finally, but under the macOS viewer SIGINT never reaches it (verified:
+  the process kept recording after Ctrl-C), so the reliable finalize paths are closing
+  the window or `--record-seconds N` (auto-close mid-race).
 - (Further decisions get appended here as they're made — newest at the bottom.)

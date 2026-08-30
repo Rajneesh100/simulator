@@ -65,6 +65,9 @@ rendering changes, press the same key again to undo — that's MuJoCo, not a sce
       speed, a passing car sweeps left/right, launches whoosh, blasts thump (louder when
       near). `]`/`[` cycle the followed car (HUD `follow:` and `>` on the board), `0`
       returns to the leader.
+- [ ] `--record-video runs/videos/x.mp4`: keys line shows `recording: ...`; after closing
+      the window the terminal prints `saved N frames (T s) with audio`; the .mp4 plays
+      in QuickTime with the leaderboard top-right, rockets/blasts visible, and sound.
 
 Known cosmetic quirk: `r` (reset) also toggles the native floor-reflection flag —
 subtle, and pressing `r` twice restores it; MuJoCo offers no way to suppress it.

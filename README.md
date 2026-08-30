@@ -445,6 +445,26 @@ uv run robosim race --checkpoint runs/rally6/final_model.zip --checkpoint runs/r
   --sound --follow RED
 ```
 
+### Recording video + audio
+
+`--record-video runs/videos/duel.mp4` (needs `uv sync --extra video`: `imageio-ffmpeg`
+bundles ffmpeg, no brew install) records the race as one H.264/AAC file. Frames are
+rendered offscreen at the SIM clock (`--record-fps 30`) through the same camera you are
+looking through, with the same overlays (rockets, blasts, roof tags, trails, lidar) and a
+burned-in leaderboard; the audio track is rendered offline by the same mixer, one block
+per frame, so picture and sound stay in lockstep even if the machine can't hold real
+time with many cars. The file is finalized when you close the window, or after
+`--record-seconds N` sim seconds (the race keeps going). It works with or without
+`--sound` (the live speakers and the file are independent mixers). Close the window to
+stop — Ctrl-C in the terminal does not reach the loop under the macOS viewer.
+
+```bash
+uv run robosim race --checkpoint runs/rally6/final_model.zip --checkpoint runs/rally5/best_model.zip \
+  --scene "racetrack:layout=gp,scale=18,seed=11,obstacles=0,road_width=3.5" \
+  --robot racecar:max_speed=12,max_torque=1.2 --cars 6 --laps 5 --firearms rocket \
+  --follow RED --sound --record-video runs/videos/duel.mp4
+```
+
 MODEL DUELS — repeat `--checkpoint` to pit different trained models against each other
 (cars assigned round-robin; roof tags and the leaderboard show `COLOR:runname`; each
 model automatically gets the lidar/lookahead settings it trained with):

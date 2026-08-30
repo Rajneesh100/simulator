@@ -38,6 +38,8 @@ Follow-cam picks a car: `--follow leader|RED|BLUE|3` (color, name, or grid index
 in the viewer `]` / `[` cycle cars, `0` snaps back to the leader, `c` toggles follow.
 `--sound` adds procedural, spatialized audio (`ui/audio.py`): engines pitched by speed,
 launches, blasts — attenuated and panned relative to the camera you are looking through.
+`--record-video out.mp4` records the race — picture AND sound — offscreen at the sim
+clock with the same camera, overlays, and a burned-in leaderboard (`ui/recorder.py`).
 """
 
 from __future__ import annotations
@@ -60,6 +62,7 @@ from robosim.sensors.lidar import Lidar, body_subtree_ids
 from robosim.train.run_config import env_kwargs_from_run, task_params_from_run
 from robosim.ui import overlay
 from robosim.ui.audio import AudioMixer
+from robosim.ui.recorder import VideoRecorder
 
 HUD_PERIOD = 0.1
 STALL_SPEED = 0.12  # m/s under which a car counts as stopped
@@ -211,6 +214,9 @@ def run_race(
     view_range: float = 0.0,
     follow: str = "leader",
     sound: bool = False,
+    record_video: str | None = None,
+    record_fps: int = 30,
+    record_seconds: float = 0.0,
 ) -> None:
     from robosim.train.play import _load_model
 
@@ -334,8 +340,63 @@ def run_race(
         if not mixer.start():
             mixer = None
     seen_blasts: set[int] = set()
+    recorder: VideoRecorder | None = None
+    if record_video:
+        recorder = VideoRecorder(record_video, world.model, n_cars=cars, fps=record_fps,
+                                 seed=0 if seed is None else seed)
+        print(f"[race] recording video+audio to {record_video} at {record_fps} fps (sim clock)")
+    pending_sounds: list[tuple[str, np.ndarray]] = []  # for the recorder's next frame
+
+    def car_status(car) -> str:
+        if rockets is not None and rockets.is_dead(car.index):
+            return " DEAD"
+        return (" FLIP" if car.flipped_for > 0
+                else (" OFF" if car.off_track_for > 0
+                      else (" rec" if car.recovering else "")))
+
+    def car_kd(car) -> str:
+        if rockets is None:
+            return ""
+        L = rockets.launchers[car.index]
+        return f" K{L.kills}/D{L.deaths}"
+
+    def audio_cars():
+        return [
+            (world.car_pose(c.index)[0], world.car_velocity(c.index),
+             world.car_speed(c.index), float(c.prev_action[0]),
+             rockets is None or not rockets.is_dead(c.index))
+            for c in car_states
+        ]
+
+    def draw_overlays(scn) -> None:
+        """Everything the window draws on top of the physics — shared with the recorder."""
+        if state.show_trail:  # every car leaves a tracer in its own color
+            for car in car_states:
+                overlay.draw_trail(scn, car.trail, rgba=car.rgba)
+        for rank, car in enumerate(sorted(car_states, key=lambda c: -c.race_distance()), 1):
+            pos, _ = world.car_pose(car.index)
+            overlay.draw_label(scn, (pos[0], pos[1], pos[2] + 0.35), f"P{rank} {car.label}", car.rgba)
+        if state.show_lidar:  # every car's rays, tinted in its own color
+            for car in car_states:
+                origin, dirs, ranges_m = car.lidar.debug_rays(
+                    world.model, world.data, exclude_body_id=car.chassis_id,
+                    exclude_body_ids=car.body_ids,
+                )
+                overlay.draw_lidar(scn, origin, dirs, ranges_m, car.lidar.max_range, rgba_hit=car.rgba)
+        if rockets is not None:
+            for r in rockets.rockets:
+                overlay.draw_rocket(scn, r, car_states[r.owner].rgba)
+            for b in rockets.blasts:
+                overlay.draw_blast(scn, b, world.data.time - b.time, rockets.blast_radius)
+            for car in car_states:
+                L = rockets.launchers[car.index]
+                if L.cooldown_left > 0 and L.last_dir is not None and L.dead_for < 0:
+                    pos, _ = world.car_pose(car.index)
+                    overlay.draw_aim(scn, pos + np.array([0, 0, 0.2]), L.last_dir, car.rgba)
 
     state = overlay.OverlayState(speed=max(0.1, min(5.0, speed)))
+    if follow_idx is not None:  # naming a car means "follow it", not just "select it"
+        state.follow = True
     timer = overlay.HudTimer()
     steps_per_action = physics.physics_steps_per_control_step()
     control_dt = world.model.opt.timestep * steps_per_action
@@ -429,15 +490,17 @@ def run_race(
     print("keys: space pause · -/= speed · c follow on/off · ]/[ next/prev car · 0 leader · "
           "x contacts · t trail · r restart · p screenshot · h hud"
           + (" · rockets: ON" if firearms == "rocket" else "")
-          + (" · sound: ON" if mixer is not None else ""), flush=True)
+          + (" · sound: ON" if mixer is not None else "")
+          + (f" · recording: {record_video}" if recorder is not None else ""), flush=True)
 
-    with mujoco.viewer.launch_passive(
+    try:
+      with mujoco.viewer.launch_passive(
         world.model,
         world.data,
         key_callback=key_callback,
         show_left_ui=False,
         show_right_ui=False,
-    ) as viewer:
+      ) as viewer:
         overlay.init_camera(viewer.cam, world.spawn_poses[0][0])
         last_hud = 0.0
 
@@ -536,13 +599,40 @@ def run_race(
                     mujoco.mj_step(world.model, world.data)
                     if rockets is not None:
                         rockets.step(world.model, world.data, sub_dt)
+                    if (recorder is not None and record_seconds > 0
+                            and recorder.frames >= record_seconds * recorder.fps):
+                        out = recorder.close()  # self-finalizing clip; the race goes on
+                        print(f"[race] saved {recorder.frames} frames "
+                              f"({recorder.frames / recorder.fps:.1f} s) with audio to {out}",
+                              flush=True)
+                        recorder = None
+                    if recorder is not None and recorder.due(world.data.time):
+                        standings_now = sorted(car_states, key=lambda c: -c.race_distance())
+                        target_now = (standings_now[0] if follow_idx is None
+                                      else car_states[follow_idx])
+                        hud = [f"t {race_time:5.1f}s  lap target {laps}  follow "
+                               f"{'leader' if follow_idx is None else target_now.label}"] + [
+                            f"P{rank} {car.label:14s} L{min(car.laps, laps)}/{laps} "
+                            f"{car.progress:6.1f}m{car_kd(car)}{car_status(car)}"
+                            for rank, car in enumerate(standings_now, 1)
+                        ]
+                        recorder.capture(
+                            world.data, viewer.cam,
+                            lookat=world.car_pose(target_now.index)[0] if state.follow else None,
+                            draw_overlays=draw_overlays, hud_lines=hud,
+                            audio_cars=audio_cars(), events=pending_sounds,
+                        )
+                        pending_sounds = []
                 race_time += control_dt
                 if rockets is not None:
                     for ev in rockets.pop_events():
-                        if mixer is not None and ev["type"] == "shot":
-                            mixer.play("launch", world.car_pose(ev["car"])[0])
-                        elif mixer is not None and ev["type"] == "dud":
-                            mixer.play("dud", world.car_pose(ev["car"])[0])
+                        if ev["type"] in ("shot", "dud"):
+                            kind = "launch" if ev["type"] == "shot" else "dud"
+                            at = world.car_pose(ev["car"])[0]
+                            if mixer is not None:
+                                mixer.play(kind, at)
+                            if recorder is not None:
+                                pending_sounds.append((kind, at))
                         if ev["type"] == "kill":
                             s_, v_ = car_states[ev["shooter"]], car_states[ev["victim"]]
                             _tint_car(world, v_.index, CHARCOAL)
@@ -630,19 +720,17 @@ def run_race(
             if mixer is not None:
                 lookat = world.car_pose(target.index)[0] if state.follow else None
                 mixer.set_listener(viewer.cam, lookat)
-                mixer.update([
-                    (world.car_pose(c.index)[0], world.car_velocity(c.index),
-                     world.car_speed(c.index), float(c.prev_action[0]),
-                     rockets is None or not rockets.is_dead(c.index))
-                    for c in car_states
-                ])
-                if rockets is not None:
-                    for b in rockets.blasts:
-                        if id(b) not in seen_blasts:
-                            seen_blasts.add(id(b))
+                mixer.update(audio_cars())
+            if rockets is not None and (mixer is not None or recorder is not None):
+                for b in rockets.blasts:
+                    if id(b) not in seen_blasts:
+                        seen_blasts.add(id(b))
+                        if mixer is not None:
                             mixer.play("blast", b.pos)
-                    if len(seen_blasts) > 256:
-                        seen_blasts = {id(b) for b in rockets.blasts}
+                        if recorder is not None:
+                            pending_sounds.append(("blast", b.pos.copy()))
+                if len(seen_blasts) > 256:
+                    seen_blasts = {id(b) for b in rockets.blasts}
 
             with viewer.lock():
                 overlay.apply_camera(
@@ -651,38 +739,10 @@ def run_race(
                 overlay.apply_vis_flags(viewer.opt, state)
                 scn = viewer.user_scn
                 scn.ngeom = 0
-                if state.show_trail:  # every car leaves a tracer in its own color
+                if state.show_trail:
                     for car in car_states:
-                        pos, _ = world.car_pose(car.index)
-                        overlay.push_trail(car, pos)  # duck-typed: uses car.trail
-                        overlay.draw_trail(scn, car.trail, rgba=car.rgba)
-                # roof tags: live position + unique name above every car
-                for rank, car in enumerate(standings, 1):
-                    pos, _ = world.car_pose(car.index)
-                    overlay.draw_label(
-                        scn, (pos[0], pos[1], pos[2] + 0.35),
-                        f"P{rank} {car.label}", car.rgba,
-                    )
-                if state.show_lidar:  # every car's rays, tinted in its own color
-                    for car in car_states:
-                        origin, dirs, ranges_m = car.lidar.debug_rays(
-                            world.model, world.data, exclude_body_id=car.chassis_id,
-                            exclude_body_ids=car.body_ids,
-                        )
-                        overlay.draw_lidar(
-                            scn, origin, dirs, ranges_m, car.lidar.max_range,
-                            rgba_hit=car.rgba,
-                        )
-                if rockets is not None:
-                    for r in rockets.rockets:
-                        overlay.draw_rocket(scn, r, car_states[r.owner].rgba)
-                    for b in rockets.blasts:
-                        overlay.draw_blast(scn, b, world.data.time - b.time, rockets.blast_radius)
-                    for car in car_states:
-                        L = rockets.launchers[car.index]
-                        if L.cooldown_left > 0 and L.last_dir is not None and L.dead_for < 0:
-                            pos, _ = world.car_pose(car.index)
-                            overlay.draw_aim(scn, pos + np.array([0, 0, 0.2]), L.last_dir, car.rgba)
+                        overlay.push_trail(car, world.car_pose(car.index)[0])  # uses car.trail
+                draw_overlays(scn)
 
             if frame_start - last_hud > HUD_PERIOD:
                 last_hud = frame_start
@@ -690,24 +750,11 @@ def run_race(
                     board_left = "\n".join(
                         f"P{rank}" for rank in range(1, len(standings) + 1)
                     )
-                    def status(car):
-                        if rockets is not None and rockets.is_dead(car.index):
-                            return " DEAD"
-                        return (" FLIP" if car.flipped_for > 0
-                                else (" OFF" if car.off_track_for > 0
-                                      else (" rec" if car.recovering else "")))
-
-                    def kd(car):
-                        if rockets is None:
-                            return ""
-                        L = rockets.launchers[car.index]
-                        return f" K{L.kills}/D{L.deaths}"
-
                     board_right = "\n".join(
                         (">" if car is target else " ")
                         + f"{car.label} L{min(car.laps, laps)}/{laps} "
                         f"{car.progress:6.1f}m {world.car_speed(car.index):3.1f}m/s"
-                        + kd(car) + status(car)
+                        + car_kd(car) + car_status(car)
                         for car in standings
                     )
                     follow_txt = ("leader" if follow_idx is None else target.label) + (
@@ -750,5 +797,12 @@ def run_race(
             elapsed = time.perf_counter() - frame_start
             if elapsed < target_dt:
                 time.sleep(target_dt - elapsed)
-    if mixer is not None:
-        mixer.stop()
+    except KeyboardInterrupt:
+        print("\n[race] interrupted", flush=True)
+    finally:  # Ctrl-C or window close: the recording must still be muxed and saved
+        if mixer is not None:
+            mixer.stop()
+        if recorder is not None and not recorder.closed:
+            out = recorder.close()
+            print(f"[race] saved {recorder.frames} frames ({recorder.frames / recorder.fps:.1f} s) "
+                  f"with audio to {out}", flush=True)
